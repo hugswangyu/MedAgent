@@ -2,13 +2,18 @@ import os
 import streamlit as st
 import ner_model as zwk
 import pickle
-import ollama
+from openai import OpenAI
 from transformers import BertTokenizer
 import torch
 import py2neo
 import random
 import re
+from config.settings import settings
 
+deepseek_client = OpenAI(
+    api_key=settings.deepseek_api_key,
+    base_url=settings.deepseek_base_url,
+)
 
 
 @st.cache_resource
@@ -26,10 +31,10 @@ def load_model(cache_model):
     idx2tag = list(tag2idx)
     rule = zwk.rule_find()
     tfidf_r = zwk.tfidf_alignment()
-    model_name = 'model/chinese-roberta-wwm-ext'
+    model_name = 'hfl/chinese-roberta-wwm-ext'
     bert_tokenizer = BertTokenizer.from_pretrained(model_name)
     bert_model = zwk.Bert_Model(model_name, hidden_size=128, tag_num=len(tag2idx), bi=True)
-    bert_model.load_state_dict(torch.load(f'model/{cache_model}.pt'))
+    bert_model.load_state_dict(torch.load(f'model/{cache_model}.pt', map_location=torch.device('cpu')))
     
     bert_model = bert_model.to(device)
     bert_model.eval()
@@ -108,7 +113,11 @@ def Intent_Recognition(query,choice):
 输出的时候请确保输出内容都在**查询类别**中出现过。确保输出类别个数**不要超过5个**！确保你的解释和合乎逻辑的！注意，如果用户询问了有关疾病的问题，一般都要先介绍一下疾病，也就是有"查询疾病简介"这个需求。
 再次检查你的输出都包含在**查询类别**:"查询疾病简介"、"查询疾病病因"、"查询疾病预防措施"、"查询疾病治疗周期"、"查询治愈概率"、"查询疾病易感人群"、"查询疾病所需药品"、"查询疾病宜吃食物"、"查询疾病忌吃食物"、"查询疾病所需检查项目"、"查询疾病所属科目"、"查询疾病的症状"、"查询疾病的治疗方法"、"查询疾病的并发疾病"、"查询药品的生产商"。
 """
-    rec_result = ollama.generate(model=choice, prompt=prompt)['response']
+    response = deepseek_client.chat.completions.create(
+        model=choice,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    rec_result = response.choices[0].message.content
     print(f'意图识别结果:{rec_result}')
     return rec_result
     # response, _ = glm_model.chat(glm_tokenizer, prompt, history=[])
@@ -289,9 +298,12 @@ def main(is_admin, usname):
 
         selected_option = st.selectbox(
             label='请选择大语言模型:',
-            options=['Qwen 1.5', 'Llama2-Chinese']
+            options=list(settings.deepseek_model_options),
+            index=settings.deepseek_model_options.index(settings.deepseek_default_model)
+            if settings.deepseek_default_model in settings.deepseek_model_options
+            else 0,
         )
-        choice = 'qwen:32b' if selected_option == 'Qwen 1.5' else 'llama2-chinese:13b-chat-q8_0'
+        choice = selected_option
 
         show_ent = show_int = show_prompt = False
         if is_admin:
@@ -310,7 +322,12 @@ def main(is_admin, usname):
             st.experimental_rerun()
 
     glm_tokenizer, glm_model, bert_tokenizer, bert_model, idx2tag, rule, tfidf_r, device = load_model(cache_model)
-    client = py2neo.Graph('http://localhost:7474', user='neo4j', password='wei8kang7.long', name='neo4j')
+    client = py2neo.Graph(
+        settings.neo4j_uri,
+        user=settings.neo4j_user,
+        password=settings.neo4j_password,
+        name=settings.neo4j_database,
+    )
 
     current_messages = st.session_state.messages[active_window_index]
 
@@ -343,9 +360,15 @@ def main(is_admin, usname):
         prompt, yitu, entities = generate_prompt(response, query, client, bert_model, bert_tokenizer, rule, tfidf_r, device, idx2tag)
 
         last = ""
-        for chunk in ollama.chat(model=choice, messages=[{'role': 'user', 'content': prompt}], stream=True):
-            last += chunk['message']['content']
-            response_placeholder.markdown(last)
+        stream = deepseek_client.chat.completions.create(
+            model=choice,
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+        )
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                last += chunk.choices[0].delta.content
+                response_placeholder.markdown(last)
         response_placeholder.markdown("")
 
         knowledge = re.findall(r'<提示>(.*?)</提示>', prompt)

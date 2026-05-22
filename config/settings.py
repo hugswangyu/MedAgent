@@ -34,6 +34,13 @@ def _env_path(name: str, default: str) -> Path:
     return BASE_DIR / path
 
 
+def _env_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     # Neo4j
@@ -67,8 +74,22 @@ class Settings:
     retrieval_top_k: int = _env_int("RETRIEVAL_TOP_K", 10)
     rerank_top_k: int = _env_int("RERANK_TOP_K", 5)
 
-    # LLM
-    llm_type: str = _env_str("LLM_TYPE", "zhipuai")
+    # LLM / DeepSeek
+    llm_type: str = _env_str("LLM_TYPE", "deepseek")
+    deepseek_api_key: str = _env_str("DEEPSEEK_API_KEY", "")
+    deepseek_base_url: str = _env_str("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    deepseek_default_model: str = _env_str("DEEPSEEK_DEFAULT_MODEL", "deepseek-chat")
+    deepseek_model_options: tuple[str, ...] = _env_tuple(
+        "DEEPSEEK_MODEL_OPTIONS",
+        (
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ),
+    )
+    deepseek_intent_model: str = _env_str("DEEPSEEK_INTENT_MODEL", deepseek_default_model)
+    deepseek_answer_model: str = _env_str("DEEPSEEK_ANSWER_MODEL", deepseek_default_model)
 
 
 settings = Settings()
@@ -91,3 +112,9 @@ USER_UPLOAD_CASE_PATH = settings.user_upload_case_path
 RETRIEVAL_TOP_K = settings.retrieval_top_k
 RERANK_TOP_K = settings.rerank_top_k
 LLM_TYPE = settings.llm_type
+DEEPSEEK_API_KEY = settings.deepseek_api_key
+DEEPSEEK_BASE_URL = settings.deepseek_base_url
+DEEPSEEK_DEFAULT_MODEL = settings.deepseek_default_model
+DEEPSEEK_MODEL_OPTIONS = settings.deepseek_model_options
+DEEPSEEK_INTENT_MODEL = settings.deepseek_intent_model
+DEEPSEEK_ANSWER_MODEL = settings.deepseek_answer_model

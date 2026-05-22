@@ -3,6 +3,7 @@ jieba==0.42.1
 nltk==3.8.1
 numpy==1.26.4
 ollama==0.2.0
+openai>=1.0.0
 pandas==2.2.2
 py2neo==2021.2.4
 pyahocorasick==2.1.0
