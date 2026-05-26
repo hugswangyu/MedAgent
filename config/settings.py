@@ -49,9 +49,11 @@ class Settings:
     neo4j_password: str = _env_str("NEO4J_PASSWORD", "all-in-rag")
     neo4j_database: str = _env_str("NEO4J_DATABASE", "neo4j")
 
-    # Milvus
+    # Milvus / Zilliz Cloud
     milvus_host: str = _env_str("MILVUS_HOST", "localhost")
     milvus_port: int = _env_int("MILVUS_PORT", 19530)
+    milvus_uri: str = _env_str("MILVUS_URI", "")
+    milvus_token: str = _env_str("MILVUS_TOKEN", "")
     milvus_collection: str = _env_str("MILVUS_COLLECTION", "medical_qa")
 
     # Embedding

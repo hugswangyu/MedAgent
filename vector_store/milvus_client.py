@@ -21,9 +21,9 @@ VARCHAR_LIMITS = {
     "pk": 128,
     "department": 128,
     "title": 512,
-    "question": 4096,
-    "answer": 8192,
-    "text": 16384,
+    "question": 65535,
+    "answer": 65535,
+    "text": 65535,
     "source": 128,
 }
 
@@ -33,18 +33,30 @@ class MilvusClientWrapper:
         self,
         host: str = settings.milvus_host,
         port: int = settings.milvus_port,
+        uri: str = settings.milvus_uri,
+        token: str = settings.milvus_token,
         collection_name: str = settings.milvus_collection,
         alias: str = "default",
     ):
         self.host = host
         self.port = str(port)
+        self.uri = uri
+        self.token = token
         self.collection_name = collection_name
         self.alias = alias
         self.collection: Collection | None = None
 
     def connect(self) -> None:
-        connections.connect(alias=self.alias, host=self.host, port=self.port)
-        print(f"Milvus connected: {self.host}:{self.port}")
+        if self.uri:
+            connections.connect(
+                alias=self.alias,
+                uri=self.uri,
+                token=self.token,
+            )
+            print(f"Milvus connected: {self.uri}")
+        else:
+            connections.connect(alias=self.alias, host=self.host, port=self.port)
+            print(f"Milvus connected: {self.host}:{self.port}")
 
     def create_collection(self, embedding_dim: int, recreate: bool = False) -> Collection:
         if recreate and utility.has_collection(self.collection_name, using=self.alias):
@@ -79,14 +91,6 @@ class MilvusClientWrapper:
             shards_num=2,
         )
 
-        self.collection.create_index(
-            field_name="embedding",
-            index_params={
-                "index_type": "HNSW",
-                "metric_type": "COSINE",
-                "params": {"M": 16, "efConstruction": 200},
-            },
-        )
         print(f"Created Milvus collection: {self.collection_name}, dim={embedding_dim}")
         return self.collection
 
@@ -116,21 +120,58 @@ class MilvusClientWrapper:
 
         try:
             self.collection.insert(rows)
-            self.collection.flush()
             return True
         except MilvusException as exc:
+            # Try one-by-one insert to skip only the bad records
+            if "exceeds max length" in str(exc).lower() or "length of varchar" in str(exc).lower():
+                return self._insert_one_by_one(rows)
+
             if hasattr(self.collection, "upsert"):
                 try:
                     self.collection.upsert(rows)
-                    self.collection.flush()
-                    print(f"warning: duplicate primary keys were upserted: {exc}")
+                    print(f"warning: duplicate primary keys were upserted")
                     return True
                 except MilvusException as upsert_exc:
+                    if "exceeds max length" in str(upsert_exc).lower() or "length of varchar" in str(upsert_exc).lower():
+                        return self._insert_one_by_one(rows)
                     print(f"warning: skip batch after Milvus upsert failed: {upsert_exc}")
                     return False
 
             print(f"warning: skip batch after Milvus insert failed: {exc}")
             return False
+
+    def _insert_one_by_one(self, rows: List[Dict]) -> bool:
+        ok = 0
+        for row in rows:
+            try:
+                self.collection.insert([row])
+                ok += 1
+            except MilvusException:
+                try:
+                    self.collection.upsert([row])
+                    ok += 1
+                except MilvusException:
+                    pass
+        return ok > 0
+
+    def flush(self) -> None:
+        if self.collection is None:
+            self.collection = Collection(self.collection_name, using=self.alias)
+        self.collection.flush()
+        print(f"Milvus collection flushed: {self.collection_name}")
+
+    def create_index(self) -> None:
+        if self.collection is None:
+            self.collection = Collection(self.collection_name, using=self.alias)
+        self.collection.create_index(
+            field_name="embedding",
+            index_params={
+                "index_type": "IVF_FLAT",
+                "metric_type": "COSINE",
+                "params": {"nlist": 2048},
+            },
+        )
+        print(f"IVF_FLAT index created on: {self.collection_name}")
 
     def load_collection(self) -> Collection:
         if self.collection is None:
@@ -143,4 +184,3 @@ class MilvusClientWrapper:
     def _clip(value: object, field_name: str) -> str:
         text = "" if value is None else str(value)
         return text[: VARCHAR_LIMITS[field_name]]
-

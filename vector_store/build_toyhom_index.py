@@ -54,6 +54,8 @@ def build_toyhom_index(
             skipped += len(batch_docs)
         print(f"Indexed {inserted}/{total}, skipped={skipped}")
 
+    milvus.flush()
+    milvus.create_index()
     milvus.load_collection()
     print(f"Toyhom index build finished. inserted={inserted}, skipped={skipped}, total={total}")
 
