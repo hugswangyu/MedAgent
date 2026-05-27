@@ -1,6 +1,10 @@
 import streamlit as st
-from user_data_storage import credentials, write_credentials, storage_file, Credentials
+from auth import Credentials, get_or_create_credentials, save_credentials
 from webui import main
+
+CREDENTIALS_FILE = "tmp_data/user_credentials.json"
+credentials = get_or_create_credentials(CREDENTIALS_FILE)
+
 # 初始化会话状态
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -14,7 +18,7 @@ def login_page():
         username = st.text_input("用户名", value="")
         password = st.text_input("密码", value="", type="password")
         submit = st.form_submit_button("登录")
-        
+
         if submit:
             user_cred = credentials.get(username)
             if user_cred and user_cred.password == password:
@@ -33,14 +37,14 @@ def register_page():
         new_password = st.text_input("设置密码", value="", type="password")
         is_admin = False
         register_submit = st.form_submit_button("注册")
-        
+
         if register_submit:
             if new_username in credentials:
                 st.error("用户名已存在，请使用其他用户名。")
             else:
                 new_user = Credentials(new_username, new_password, is_admin)
                 credentials[new_username] = new_user
-                write_credentials(storage_file, credentials)
+                save_credentials(credentials, CREDENTIALS_FILE)
                 st.success(f"用户 {new_username} 注册成功！请登录。")
                 st.experimental_rerun()
 
