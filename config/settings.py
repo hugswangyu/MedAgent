@@ -52,14 +52,8 @@ class Settings:
     # Milvus / Zilliz Cloud
     milvus_host: str = _env_str("MILVUS_HOST", "localhost")
     milvus_port: int = _env_int("MILVUS_PORT", 19530)
-    milvus_uri: str = _env_str(
-        "MILVUS_URI",
-        "https://in03-6fb10f4eae552d0.serverless.ali-cn-hangzhou.cloud.zilliz.com.cn",
-    )
-    milvus_token: str = _env_str(
-        "MILVUS_TOKEN",
-        "db_6fb10f4eae552d0:Fv5+L]j7t|kK+Z4w",
-    )
+    milvus_uri: str = _env_str("MILVUS_URI", "")
+    milvus_token: str = _env_str("MILVUS_TOKEN", "")
     milvus_collection: str = _env_str("MILVUS_COLLECTION", "medical_qa")
 
     # Embedding
