@@ -1,4 +1,4 @@
-"""Milvus client wrapper for medical QA vectors."""
+"""Milvus 客户端封装，用于医疗问答向量存储。"""
 
 from __future__ import annotations
 
@@ -125,7 +125,7 @@ class MilvusClientWrapper:
             self.collection.insert(rows)
             return True
         except MilvusException as exc:
-            # Try one-by-one insert to skip only the bad records
+            # 逐条插入以仅跳过有问题的记录
             if "exceeds max length" in str(exc).lower() or "length of varchar" in str(exc).lower():
                 return self._insert_one_by_one(rows)
 

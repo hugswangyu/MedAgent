@@ -1,4 +1,4 @@
-"""Case file parser — supports txt, pdf, docx."""
+"""病例文件解析器 —— 支持 txt、pdf、docx。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def _parse_txt(path: Path) -> str:
-    """Read txt with utf-8, fall back to gbk."""
+    """读取 txt 文件，utf-8 优先，回退到 gbk。"""
     for encoding in ("utf-8", "gbk"):
         try:
             return path.read_text(encoding=encoding).strip()
@@ -39,9 +39,9 @@ _PARSERS = {
 
 
 def parse_case_file(file_path: str) -> str:
-    """Parse a case file (txt / pdf / docx) and return its text content.
+    """解析病例文件（txt / pdf / docx），返回文本内容。
 
-    Raises ValueError for unsupported extensions.
+    不支持的扩展名将抛出 ValueError。
     """
     path = Path(file_path)
     suffix = path.suffix.lower()

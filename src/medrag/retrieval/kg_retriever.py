@@ -1,12 +1,11 @@
-"""Neo4j Knowledge Graph Retriever.
+"""Neo4j 知识图谱检索器。
 
-Wraps the project's existing NER model, DeepSeek intent recognition, and
-Cypher query patterns into a single KGRetriever class with a unified
-``search(query) -> List[Dict]`` interface.
+将项目现有的 NER 模型、DeepSeek 意图识别和 Cypher 查询模式封装到
+单个 KGRetriever 类中，提供统一的 ``search(query) -> List[Dict]`` 接口。
 
-Does NOT rewrite the original logic — NER is imported from ``ner_model``,
-intent recognition reuses the same prompt as ``webui.Intent_Recognition``,
-and Cypher patterns mirror ``webui.generate_prompt``.
+不重写原有逻辑 —— NER 从 ``ner_model`` 导入，
+意图识别复用与 ``webui.Intent_Recognition`` 相同的提示词，
+Cypher 模式镜像了 ``webui.generate_prompt`` 的实现。
 """
 
 from __future__ import annotations
@@ -22,15 +21,15 @@ from medrag.retrieval.intent import recognize_intents
 from medrag.ner import model as zwk
 
 # ---------------------------------------------------------------------------
-# Intent → Cypher mapping
+# 意图 → Cypher 映射
 # ---------------------------------------------------------------------------
-# Each tuple: (keyword, query_type, relation_or_attribute, target_type, required_entity_type)
+# 每个元组: (keyword, query_type, relation_or_attribute, target_type, required_entity_type)
 # query_type: "attribute" | "relation" | "reverse_relation"
 #
-# NOTE: keyword order matters. "治疗周期" must be checked before "治疗" to
-# avoid false matches; "查询疾病所属科目" is a full sentence-level check
-# (see webui.py:217).  This list mirrors the if/elif chain in
-# webui.generate_prompt exactly.
+# 注意：keyword 顺序很重要。"治疗周期" 必须在 "治疗" 之前检查以避免
+# 错误匹配；"查询疾病所属科目" 是整句级别的检查
+# （参见 webui.py:217）。此列表完全镜像了 webui.generate_prompt
+# 中的 if/elif 链。
 # ---------------------------------------------------------------------------
 _INTENT_SPEC: List[tuple] = [
     ("简介",           "attribute",        "疾病简介",       None,       "疾病"),
@@ -52,15 +51,15 @@ _INTENT_SPEC: List[tuple] = [
 
 
 class KGRetriever:
-    """Unified retriever over the Neo4j medical knowledge graph.
+    """Neo4j 医学知识图谱统一检索器。
 
-    Relies on the **existing** NER pipeline (``ner_model``) and replicates
-    the Cypher patterns from ``webui.generate_prompt``.  Intent recognition
-    uses DeepSeek with the same few-shot prompt as ``webui.Intent_Recognition``.
+    依赖**现有**的 NER 流水线（``ner_model``），复制了 ``webui.generate_prompt``
+    中的 Cypher 模式。意图识别使用 DeepSeek 配合与 ``webui.Intent_Recognition``
+    相同的 few-shot 提示词。
 
-    Usage::
+    用法::
 
-        # Obtain NER components (same as webui.load_model)
+        # 获取 NER 组件（与 webui.load_model 相同）
         rule = zwk.rule_find()
         tfidf_r = zwk.tfidf_alignment()
         ...
@@ -69,7 +68,7 @@ class KGRetriever:
             bert_model, bert_tokenizer, rule, tfidf_r, device, idx2tag,
         )
         results = retriever.search("感冒了怎么办")
-        # results is List[Dict], each dict has:
+        # results 为 List[Dict]，每个字典包含:
         #   source, intent, entity, relation, answer, evidence, score
     """
 
@@ -95,7 +94,7 @@ class KGRetriever:
         self.llm = get_llm_client("deepseek")
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # 内部辅助方法
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -108,7 +107,7 @@ class KGRetriever:
         )
 
     def _get_entities(self, query: str) -> Dict[str, str]:
-        """NER pipeline: {entity_type: canonical_name}."""
+        """NER 流水线: {entity_type: canonical_name}。"""
         try:
             return zwk.get_ner_result(
                 self.bert_model,
@@ -123,18 +122,18 @@ class KGRetriever:
             return {}
 
     # ------------------------------------------------------------------
-    # Intent recognition
+    # 意图识别
     # ------------------------------------------------------------------
-    # The prompt below is copied from webui.Intent_Recognition to avoid
-    # importing Streamlit-dependent modules.  If you extract intent
-    # recognition into a shared utility, import it here instead.
+    # 以下提示词从 webui.Intent_Recognition 复制而来，以避免导入
+    # 依赖 Streamlit 的模块。如果将意图识别提取到共享工具模块中，
+    # 改从这里导入。
     # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
-    # Cypher query helpers
+    # Cypher 查询辅助方法
     # ------------------------------------------------------------------
-    # These replicate the add_shuxing_prompt / add_lianxi_prompt functions
-    # from webui.py but return raw data instead of prompt strings.
+    # 这些方法复制了 webui.py 中的 add_shuxing_prompt / add_lianxi_prompt
+    # 函数，但返回原始数据而非提示字符串。
     # ------------------------------------------------------------------
 
     def _query_attribute(self, entity: str, attribute: str) -> Optional[str]:
@@ -180,7 +179,7 @@ class KGRetriever:
         return None
 
     def _resolve_disease_from_symptom(self, symptom: str) -> Optional[str]:
-        """Reverse-lookup: symptom → possible diseases, pick one at random."""
+        """反向查找：症状 → 可能的疾病，随机选取一个。"""
         cypher = (
             "match (a:疾病)-[r:疾病的症状]->(b:疾病症状 {名称:'%s'}) return a.名称"
             % symptom
@@ -195,7 +194,7 @@ class KGRetriever:
         return None
 
     # ------------------------------------------------------------------
-    # Public interface
+    # 公开接口
     # ------------------------------------------------------------------
 
     def search(
@@ -203,42 +202,40 @@ class KGRetriever:
         query: str,
         intents: Optional[str] = None,
     ) -> List[Dict]:
-        """Search the Neo4j knowledge graph for information relevant to *query*.
+        """在 Neo4j 知识图谱中搜索与 *query* 相关的信息。
 
         Parameters
         ----------
         query:
-            Natural-language medical question.
+            自然语言医学问题。
         intents:
-            Raw intent recognition result.  When *None* (default), intents
-            are auto-detected via DeepSeek.  You can pass a pre-computed
-            string (the output of ``Intent_Recognition``) to skip the LLM
-            call.
+            原始意图识别结果。为 *None*（默认）时，通过 DeepSeek
+            自动检测意图。可传入预计算结果
+            （``Intent_Recognition`` 的输出）以跳过 LLM 调用。
 
         Returns
         -------
         List[Dict]
-            Each dict has keys ``source``, ``intent``, ``entity``,
-            ``relation``, ``answer``, ``evidence``, ``score``.
-            Returns an empty list when no entity is found or all queries
-            come back empty.
+            每个字典包含键 ``source``、``intent``、``entity``、
+            ``relation``、``answer``、``evidence``、``score``。
+            当未找到实体或所有查询返回空时，返回空列表。
         """
-        # 1. NER
+        # 1. 命名实体识别
         entities = self._get_entities(query)
         if not entities:
             return []
 
-        # 2. Intent recognition (cached if caller provided it)
+        # 2. 意图识别（若调用方提供则使用缓存）
         raw_intents = intents if intents is not None else recognize_intents(query, self.llm)
         if not raw_intents:
             return []
 
-        # 3. Special case: symptom without disease → reverse-lookup
+        # 3. 特殊情况：仅有症状无疾病 → 反向查找
         disease = entities.get("疾病")
         if "疾病症状" in entities and disease is None:
             disease = self._resolve_disease_from_symptom(entities["疾病症状"])
 
-        # 4. Execute matched intents
+        # 4. 执行匹配到的意图
         results: List[Dict] = []
         for keyword, qtype, rel_attr, target, req_entity in _INTENT_SPEC:
             if keyword not in raw_intents:

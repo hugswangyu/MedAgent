@@ -1,15 +1,21 @@
-"""Centralized project settings.
+"""集中化项目配置。
 
-Values are loaded from environment variables first and fall back to simple
-defaults so existing local runs continue to work without extra setup.
+优先从环境变量读取，回退到默认值，确保现有环境不用额外配置就能运行。
 """
 
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# 从项目根目录加载 .env（从 src/medrag/config/ 向上遍历至仓库根目录）
+_env_root = BASE_DIR
+while _env_root.parent != _env_root and not (_env_root / ".env").exists():
+    _env_root = _env_root.parent
+load_dotenv(_env_root / ".env")
 
 
 def _env_str(name: str, default: str) -> str:

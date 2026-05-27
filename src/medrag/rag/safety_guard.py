@@ -1,11 +1,11 @@
-"""Safety Guard: medical risk detection and safety notice injection."""
+"""安全卫士：医疗风险检测与安全提示注入。"""
 
 from __future__ import annotations
 
 from typing import Dict, List
 
 # ---------------------------------------------------------------------------
-# High-risk keyword → category label
+# 高风险关键词 → 类别标签
 # ---------------------------------------------------------------------------
 
 _HIGH_RISK_KEYWORDS: Dict[str, str] = {
@@ -35,9 +35,9 @@ _DISCLAIMER = (
 
 
 class SafetyGuard:
-    """Detect high-risk medical queries and inject safety notices.
+    """检测高风险医疗查询并注入安全提示。
 
-    Usage::
+    用法::
 
         guard = SafetyGuard()
         risk = guard.detect_risk(query, answer)
@@ -45,19 +45,18 @@ class SafetyGuard:
     """
 
     def detect_risk(self, query: str, answer: str = "") -> Dict:
-        """Scan *query* and *answer* for high-risk keywords.
+        """扫描 *query* 和 *answer* 中的高风险关键词。
 
         Args:
-            query: The user's question.
-            answer: The LLM-generated answer (optional). Also scanned so
-                    that risk keywords appearing in the model's own
-                    response are not overlooked.
+            query: 用户问题。
+            answer: LLM 生成的回答（可选）。一并扫描，避免遗漏
+                    模型自身回复中出现的高风险关键词。
 
         Returns:
-            A dict with:
-            - ``is_high_risk``: ``True`` when any risk keyword is found.
-            - ``risk_types``: list of matched keyword labels.
-            - ``safety_message``: the high-risk warning string, or ``""``.
+            字典，包含:
+            - ``is_high_risk``: 匹配到任何风险关键词时为 ``True``。
+            - ``risk_types``: 匹配到的关键词标签列表。
+            - ``safety_message``: 高风险警告字符串，或 ``""``。
         """
         combined = f"{query}\n{answer}"
         risk_types: List[str] = []
@@ -75,17 +74,17 @@ class SafetyGuard:
 
     @staticmethod
     def append_safety_notice(answer: str, risk_info: Dict) -> str:
-        """Apply safety notices to *answer* based on *risk_info*.
+        """根据 *risk_info* 向 *answer* 中注入安全提示。
 
-        - If high-risk, prepend the urgent-care warning.
-        - Always append the disclaimer.
+        - 若为高风险，在开头添加紧急就医警告。
+        - 始终在末尾添加免责声明。
 
         Args:
-            answer: The original answer text.
-            risk_info: Dict returned by :meth:`detect_risk`.
+            answer: 原始回答文本。
+            risk_info: :meth:`detect_risk` 返回的字典。
 
         Returns:
-            The answer text with safety notices injected.
+            注入了安全提示的回答文本。
         """
         parts: List[str] = []
 

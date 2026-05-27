@@ -1,4 +1,4 @@
-"""Prompt builder: assembles retrieval results into a final LLM prompt."""
+"""提示词构建器：将检索结果组装为最终的 LLM 提示词。"""
 
 from __future__ import annotations
 
@@ -12,14 +12,14 @@ from medrag.prompts import (
     CONTEXT_EMPTY_NOTE,
 )
 
-MAX_PER_SOURCE = 5          # max results per source in the prompt
-MAX_RESULT_CHARS = 400      # truncate each result to this length
+MAX_PER_SOURCE = 5          # 每个来源在提示词中的最大结果数
+MAX_RESULT_CHARS = 400      # 每条结果截断长度
 
 
 class PromptBuilder:
-    """Assemble full answer-generation prompt from multi-source results.
+    """将多源检索结果组装为完整的答案生成提示词。
 
-    Usage::
+    用法::
 
         builder = PromptBuilder()
         prompt = builder.build_answer_prompt(
@@ -29,7 +29,7 @@ class PromptBuilder:
             case_context=None,
             route=route,
         )
-        # → feed *prompt* to DeepSeek / OpenAI
+        # → 将 *prompt* 喂给 DeepSeek / OpenAI
     """
 
     def build_answer_prompt(
@@ -40,20 +40,19 @@ class PromptBuilder:
         case_context: Optional[str] = None,
         route: Optional[Dict] = None,
     ) -> str:
-        """Build the final prompt string for the answering LLM.
+        """构建用于回答 LLM 的最终提示词字符串。
 
         Args:
-            query: Original user question.
-            kg_results: KGRetriever.search() output (already re-ranked).
-            toyhom_results: ToyhomQARetriever.search() output (already re-ranked).
-            case_context: Pre-computed user case summary, or None.
-            route: Router decision dict (unused for now; reserved for
-                   future prompt adaptation based on query_type).
+            query: 用户原始问题。
+            kg_results: KGRetriever.search() 输出（已重排序）。
+            toyhom_results: ToyhomQARetriever.search() 输出（已重排序）。
+            case_context: 预先计算的用户病例摘要，或 None。
+            route: 路由器决策字典（目前未用，预留给未来基于 query_type 的提示词适配）。
         """
-        # --- Assemble context blocks ---
+        # --- 组装上下文块 ---
         sections: list[str] = []
 
-        # 1. Case context (highest priority)
+        # 1. 病例上下文（最高优先级）
         if case_context:
             sections.append(
                 CONTEXT_CASE_HEADER.format(case_text=case_context.strip())
@@ -63,21 +62,21 @@ class PromptBuilder:
                 CONTEXT_CASE_HEADER.format(case_text=CONTEXT_EMPTY_NOTE)
             )
 
-        # 2. KG results
+        # 2. 知识图谱结果
         if kg_results:
             kg_text = self._format_kg_results(kg_results[:MAX_PER_SOURCE])
             sections.append(CONTEXT_KG_HEADER.format(kg_text=kg_text))
         else:
             sections.append(CONTEXT_KG_HEADER.format(kg_text=CONTEXT_EMPTY_NOTE))
 
-        # 3. Toyhom QA results
+        # 3. Toyhom 问答结果
         if toyhom_results:
             qa_text = self._format_toyhom_results(toyhom_results[:MAX_PER_SOURCE])
             sections.append(CONTEXT_TOYHOM_HEADER.format(qa_text=qa_text))
         else:
             sections.append(CONTEXT_TOYHOM_HEADER.format(qa_text=CONTEXT_EMPTY_NOTE))
 
-        # --- Final prompt ---
+        # --- 最终提示词 ---
         context = "\n".join(sections)
         return (
             MEDICAL_ANSWER_PROMPT
@@ -86,11 +85,12 @@ class PromptBuilder:
         )
 
     # ------------------------------------------------------------------
-    # Formatting helpers
+    # 格式化辅助方法
     # ------------------------------------------------------------------
 
     @staticmethod
     def _format_kg_results(results: list[Dict]) -> str:
+        """格式化知识图谱结果。"""
         lines: list[str] = []
         for i, r in enumerate(results, 1):
             intent = r.get("intent", "")
@@ -102,6 +102,7 @@ class PromptBuilder:
 
     @staticmethod
     def _format_toyhom_results(results: list[Dict]) -> str:
+        """格式化 Toyhom 问答结果。"""
         lines: list[str] = []
         for i, r in enumerate(results, 1):
             title = r.get("title", "")

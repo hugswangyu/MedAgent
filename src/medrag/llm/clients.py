@@ -1,7 +1,7 @@
-"""Unified LLM client factory.
+"""统一 LLM 客户端工厂。
 
-Single point of creation for all LLM backends (DeepSeek, ZhipuAI, Ollama).
-Clients are cached per provider so repeated calls return the same instance.
+所有 LLM 后端（DeepSeek、ZhipuAI、Ollama）的单一创建入口。
+客户端按 provider 缓存，重复调用返回同一实例。
 """
 
 from __future__ import annotations
@@ -12,14 +12,14 @@ _clients: dict[str, object] = {}
 
 
 def get_llm_client(provider: str | None = None):
-    """Return a cached LLM client for *provider*.
+    """返回 *provider* 对应的缓存 LLM 客户端。
 
     Args:
-        provider: ``"deepseek"`` | ``"zhipuai"`` | ``"ollama"``.
-                  Defaults to ``settings.llm_provider``.
+        provider: ``"deepseek"`` | ``"zhipuai"`` | ``"ollama"``。
+                  默认为 ``settings.llm_provider``。
 
     Returns:
-        An OpenAI-compatible client (``openai.OpenAI`` or ``zhipuai.ZhipuAI``).
+        兼容 OpenAI 的客户端（``openai.OpenAI`` 或 ``zhipuai.ZhipuAI``）。
     """
     provider = (provider or settings.llm_provider).strip().lower()
 

@@ -1,8 +1,7 @@
-"""Medical query intent recognition.
+"""医疗查询意图识别。
 
-Extracted from KGRetriever so it can be reused independently of the
-Neo4j pipeline.  Uses a few-shot LLM prompt to classify a user question
-into one or more of 15 predefined medical query intents.
+从 KGRetriever 中提取，可独立于 Neo4j 流水线复用。
+通过 few-shot LLM 提示词将用户问题分类到 15 个预定义医学查询意图之一。
 """
 
 from __future__ import annotations
@@ -12,15 +11,15 @@ from medrag.prompts import INTENT_PROMPT_TEMPLATE
 
 
 def recognize_intents(query: str, llm_client) -> str:
-    """Call the LLM for intent recognition.
+    """调用 LLM 进行意图识别。
 
     Args:
-        query: Natural-language medical question.
-        llm_client: OpenAI-compatible client (chat.completions.create).
+        query: 自然语言医学问题。
+        llm_client: 兼容 OpenAI 的客户端（chat.completions.create）。
 
     Returns:
-        Raw API response string (e.g.
-        ``["查询疾病简介","查询疾病病因"] # comment``), or ``""`` on failure.
+        原始 API 响应字符串（如 ``["查询疾病简介","查询疾病病因"] # 注释``），
+        失败时返回 ``""``。
     """
     try:
         prompt = INTENT_PROMPT_TEMPLATE.format(query=query)

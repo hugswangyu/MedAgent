@@ -1,31 +1,30 @@
-"""Medical text cleaning and desensitization utilities."""
+"""医疗文本清洗与脱敏工具。"""
 
 from __future__ import annotations
 
 import re
 
 def desensitize_medical_text(text: str) -> str:
-    """Replace PII (name, ID, phone, address, etc.) with placeholder tokens.
+    """替换 PII（姓名、身份证、手机号、地址等）为占位符。
 
-    NOTE: Regex-based, not a complete solution.  Covers common patterns
-    found in Chinese medical records:
-      - 姓名 (2–4 character Chinese names; best-effort)
-      - 身份证号 (18-digit)
-      - 手机号 (11-digit)
+    注意：基于正则表达式，并非完整的脱敏方案。涵盖中文病历中常见的模式：
+      - 姓名（2–4 字中文姓名，尽力匹配）
+      - 身份证号（18 位）
+      - 手机号（11 位）
       - 固定电话
-      - 就诊卡号 / 住院号 (labelled digit strings)
-      - 住址 (structured address strings)
+      - 就诊卡号 / 住院号（带标识的数字串）
+      - 住址（结构化地址字符串）
     """
-    # Strip leading/trailing whitespace first
+    # 去除首尾空白
     text = text.strip()
 
-    # 姓名 — replace "姓名：XXX" or "患者：XXX" patterns
+    # 姓名 — 替换 "姓名：XXX" 或 "患者：XXX" 模式
     text = re.sub(
         r"(姓名|患者|病人|联系人)[：:\s]*[一-龥]{2,4}(?![一-龥])",
         r"\1：【姓名***】",
         text,
     )
-    # Isolated name at document head (2-4 Chinese chars on their own line)
+    # 文档开头的独立姓名（单独一行 2-4 个中文字符）
     text = re.sub(
         r"^([一-龥]{2,4})$",
         "【姓名***】",
@@ -33,7 +32,7 @@ def desensitize_medical_text(text: str) -> str:
         flags=re.MULTILINE,
     )
 
-    # Labelled IDs and addresses
+    # 带标签的 ID 和地址
     text = re.sub(
         r"(就诊卡号|住院号|病历号|病案号|门诊号)[：:\s]*[A-Za-z0-9]{4,30}",
         r"\1：【\1***】",
@@ -48,7 +47,7 @@ def desensitize_medical_text(text: str) -> str:
         text,
     )
 
-    # Bare PII patterns
+    # 裸 PII 模式
     text = re.sub(r"\b\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b",
                   "【身份证号***】", text)
     text = re.sub(r"\b1[3-9]\d{9}\b", "【手机号***】", text)
@@ -58,12 +57,12 @@ def desensitize_medical_text(text: str) -> str:
 
 
 def clean_medical_text(text: str) -> str:
-    """Normalise whitespace and remove obvious noise from medical text.
+    """格式化医疗文本：统一空白字符，去除明显噪声。
 
-    Does NOT remove medical content — only fixes formatting:
-      - Collapse repeated blank lines
-      - Replace full-width spaces with half-width
-      - Strip leading/trailing whitespace
+    不会删除医疗内容 —— 仅修复格式问题：
+      - 合并重复的空行
+      - 替换全角空格为半角
+      - 去除首尾空白
     """
     text = text.strip()
     text = text.replace("\r\n", "\n").replace("\r", "\n")

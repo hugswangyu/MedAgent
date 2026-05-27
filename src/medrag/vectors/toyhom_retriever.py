@@ -1,4 +1,4 @@
-"""Toyhom medical QA retriever backed by Milvus / Zilliz Cloud."""
+"""Toyhom 医疗问答检索器，基于 Milvus / Zilliz Cloud。"""
 
 from __future__ import annotations
 
@@ -77,10 +77,10 @@ class ToyhomQARetriever:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Search Toyhom medical QA via Milvus.")
-    parser.add_argument("query", nargs="?", help="Search query.")
-    parser.add_argument("--top_k", type=int, default=5, help="Number of results.")
-    parser.add_argument("--department", default=None, help="Filter by department.")
+    parser = argparse.ArgumentParser(description="通过 Milvus 搜索 Toyhom 医学问答。")
+    parser.add_argument("query", nargs="?", help="搜索查询。")
+    parser.add_argument("--top_k", type=int, default=5, help="返回结果数量。")
+    parser.add_argument("--department", default=None, help="按科室过滤。")
     return parser.parse_args()
 
 

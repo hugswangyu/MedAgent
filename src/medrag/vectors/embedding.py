@@ -1,4 +1,4 @@
-"""Sentence-transformers embedding wrapper."""
+"""Sentence-transformers 嵌入模型封装。"""
 
 from __future__ import annotations
 

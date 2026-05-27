@@ -1,7 +1,6 @@
-"""User credentials model and JSON file persistence.
+"""用户凭据模型与 JSON 文件持久化。
 
-Replaces the scattered auth logic previously in ``user_data_storage.py``
-and the hardcoded admin check in ``webui.py``.
+替代分散在 ``user_data_storage.py`` 中的认证逻辑和 ``webui.py`` 中硬编码的管理员检查。
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ class Credentials:
 
 
 # ---------------------------------------------------------------------------
-# Persistence
+# 持久化
 # ---------------------------------------------------------------------------
 
 DEFAULT_STORAGE_FILE = os.path.join("tmp_data", "user_credentials.json")
@@ -48,7 +47,7 @@ def _ensure_storage_dir(file_path: str) -> None:
 
 
 def load_credentials(file_path: str = DEFAULT_STORAGE_FILE) -> Dict[str, Credentials]:
-    """Read credentials from *file_path*.  Returns an empty dict on failure."""
+    """从 *file_path* 读取凭据，失败时返回空字典。"""
     try:
         with open(file_path, "r") as f:
             data = json.load(f)
@@ -61,7 +60,7 @@ def save_credentials(
     credentials: Dict[str, Credentials],
     file_path: str = DEFAULT_STORAGE_FILE,
 ) -> None:
-    """Write *credentials* dict to *file_path*."""
+    """将 *credentials* 字典写入 *file_path*。"""
     _ensure_storage_dir(file_path)
     data = {k: v.to_dict() for k, v in credentials.items()}
     with open(file_path, "w") as f:
@@ -71,7 +70,7 @@ def save_credentials(
 def get_or_create_credentials(
     file_path: str = DEFAULT_STORAGE_FILE,
 ) -> Dict[str, Credentials]:
-    """Load credentials, initialising a default admin account if the file is empty."""
+    """加载凭据，若文件为空则初始化默认管理员账号。"""
     creds = load_credentials(file_path)
     if not creds:
         admin = Credentials(username="admin", password="admin123", is_admin=True)

@@ -1,21 +1,20 @@
-"""Evaluate and compare Toyhom retrieval strategies.
+"""评估和比较 Toyhom 检索策略。
 
-Compares four indexing strategies on Precision@k and Recall@k:
-  - title_only        clean medical question (proposed)
-  - question_only     patient's verbose description
-  - full_text         department + title + question + answer (baseline)
-  - title_question    title + question combined
+比较四种索引策略在 Precision@k 和 Recall@k 上的表现：
+  - title_only        清洗后的医疗问题（提案方案）
+  - question_only     患者详细描述
+  - full_text         科室 + 标题 + 问题 + 回答（基线）
+  - title_question    标题 + 问题组合
 
-Methodology:
-  1. Sample a diverse corpus from the Toyhom dataset (stratified by department).
-  2. Define a set of test queries with manually labelled disease topics.
-  3. For each query, ground-truth = records in the corpus whose title
-     contains the same disease term (e.g., all "早泄" records for a
-     query about "早泄").
-  4. Compute Precision@k, Recall@k, and MRR for each strategy.
+方法论：
+  1. 从 Toyhom 数据集中分层抽样构建语料库（按科室分层）。
+  2. 定义一组带人工标注疾病主题的测试查询。
+  3. 对每个查询，ground-truth = 语料库中标题包含相同疾病术语的文档
+     （如关于"早泄"的查询对应的所有"早泄"文档）。
+  4. 对每种策略计算 Precision@k、Recall@k 和 MRR。
 
-Usage:
-    python vector_store/eval_retrieval_strategies.py \
+用法:
+    python vector_store/eval_retrieval_strategies.py \\
         [--samples_per_dept 800] [--k 1 3 5 10]
 """
 
@@ -35,7 +34,7 @@ from medrag.data.toyhom_loader import load_toyhom_dataset
 
 BGE_QUERY_PREFIX = "为这个句子生成表示以用于检索相关文章："
 
-# ── strategies ──────────────────────────────────────────────────────────
+# ── 策略 ──────────────────────────────────────────────────────────────
 STRATEGIES: Dict[str, Callable[[dict], str]] = {
     "title_only":      lambda r: r["title"],
     "question_only":   lambda r: r["question"],
@@ -43,7 +42,7 @@ STRATEGIES: Dict[str, Callable[[dict], str]] = {
     "title_question":  lambda r: f"{r['title']} {r['question']}",
 }
 
-# ── manual test queries ─────────────────────────────────────────────────
+# ── 人工测试查询 ─────────────────────────────────────────────────
 # (query_text, disease_keyword_to_match_in_corpus_title)
 TEST_QUERIES: List[Tuple[str, str]] = [
     # 男科 (4)
@@ -79,8 +78,7 @@ def build_ground_truth(
     corpus_records: List[dict],
     test_queries: List[Tuple[str, str]],
 ) -> Dict[int, Set[int]]:
-    """For each query, find all corpus records whose title contains
-    the disease keyword (simple substring match)."""
+    """对每个查询，在语料库中查找标题包含疾病关键词的文档（简单子串匹配）。"""
     gt: Dict[int, Set[int]] = {}
     for q_idx, (_, disease) in enumerate(test_queries):
         relevant: Set[int] = set()
@@ -91,7 +89,7 @@ def build_ground_truth(
     return gt
 
 
-# ── metrics ─────────────────────────────────────────────────────────────
+# ── 指标计算 ─────────────────────────────────────────────────────────
 
 def compute_metrics(
     query_emb: np.ndarray,
@@ -99,7 +97,7 @@ def compute_metrics(
     relevant: Set[int],
     k_values: List[int],
 ) -> Dict[str, float]:
-    """Precision@k, Recall@k, MRR for a single query."""
+    """对单个查询计算 Precision@k、Recall@k、MRR。"""
     sims = cosine_similarity(query_emb.reshape(1, -1), corpus_embs)[0]
     ranked = np.argsort(sims)[::-1]
     n_rel = len(relevant)
@@ -130,7 +128,7 @@ def evaluate_strategy(
     gt: Dict[int, Set[int]],
     k_values: List[int],
 ) -> Dict[str, float]:
-    """Evaluate one strategy against pre-computed corpus embeddings."""
+    """对预计算的语料库嵌入评估一种策略。"""
     from sentence_transformers import SentenceTransformer
     model = SentenceTransformer("BAAI/bge-small-zh-v1.5")
 
@@ -174,11 +172,11 @@ def _stratified_sample(records: List[dict], per_dept: int, seed: int = 42) -> Li
     return sampled
 
 
-# ── main ────────────────────────────────────────────────────────────────
+# ── 主函数 ────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare Toyhom retrieval strategies."
+        description="对比 Toyhom 检索策略。"
     )
     parser.add_argument("--data_root", default="Chinese-medical-dialogue-data/Data_数据")
     parser.add_argument("--samples_per_dept", type=int, default=1000)
@@ -186,8 +184,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    # ── load & sample ──────────────────────────────────────────────────
-    load_limit = 700_000  # enough to cover all 6 departments (~665k total)
+    # ── 加载与采样 ──────────────────────────────────────────────────
+    load_limit = 700_000  # 覆盖全部 6 个科室（总计约 665k）
     print(f"Loading up to {load_limit} records …")
     records = load_toyhom_dataset(args.data_root, limit=load_limit)
     depts = sorted({r["department"] for r in records})
@@ -197,7 +195,7 @@ def main() -> None:
     corpus = _stratified_sample(records, args.samples_per_dept, args.seed)
     print(f"Corpus: {len(corpus)} records\n")
 
-    # ── ground truth ───────────────────────────────────────────────────
+    # ── 构建 ground truth ───────────────────────────────────────────────
     print("Building ground truth (disease-keyword substring match in title) …")
     gt = build_ground_truth(corpus, TEST_QUERIES)
     for (q_text, disease), relevant in zip(TEST_QUERIES, gt.values()):
@@ -207,7 +205,7 @@ def main() -> None:
         print(f"  ⚠ {n_empty} queries have ZERO relevant docs!")
     print()
 
-    # ── encode corpus per strategy ─────────────────────────────────────
+    # ── 各策略分别编码语料库 ─────────────────────────────────────────
     from sentence_transformers import SentenceTransformer
     model = SentenceTransformer("BAAI/bge-small-zh-v1.5")
 
@@ -219,7 +217,7 @@ def main() -> None:
             texts, normalize_embeddings=True, show_progress_bar=True,
         )
 
-    # ── evaluate ───────────────────────────────────────────────────────
+    # ── 评估 ───────────────────────────────────────────────────────
     results: Dict[str, Dict[str, float]] = {}
     for name, fn in STRATEGIES.items():
         print(f"[{name}] Evaluating {len(TEST_QUERIES)} queries …")
@@ -230,14 +228,14 @@ def main() -> None:
         elapsed = time.perf_counter() - t0
         print(f"  {elapsed:.1f}s  |  valid_queries={results[name]['valid_queries']}")
 
-    # ── print tables ───────────────────────────────────────────────────
+    # ── 打印结果表 ───────────────────────────────────────────────────
     print("\n" + "=" * 90)
     print("RETRIEVAL STRATEGY COMPARISON")
     print(f"Corpus: {len(corpus)} docs across {len(depts)} departments  |  "
           f"Test queries: {len(TEST_QUERIES)}")
     print("=" * 90)
 
-    # Precision
+    # Precision 表
     header = f"{'Strategy':<20}"
     for k in args.k:
         header += f"{f'P@{k}':<10}"
@@ -252,7 +250,7 @@ def main() -> None:
         line += f"{r['MRR']:<10.4f}"
         print(line)
 
-    # Recall
+    # Recall 表
     print(f"\n{'Strategy':<20}", end="")
     for k in args.k:
         print(f"{f'R@{k}':<10}", end="")
@@ -265,7 +263,7 @@ def main() -> None:
             line += f"{r[f'R@{k}']:<10.4f}"
         print(line)
 
-    # ── summary ───────────────────────────────────────────────────────
+    # ── 汇总结果 ───────────────────────────────────────────────────────
     print("\n" + "-" * 90)
     best = max(STRATEGIES, key=lambda n: results[n]["P@1"])
     base = results["full_text"]
@@ -277,7 +275,7 @@ def main() -> None:
     print(f"Top R@10: {best} = {best_r['R@10']:.4f}  "
           f"(full_text baseline = {base['R@10']:.4f})")
 
-    # ── resume markdown table ─────────────────────────────────────────
+    # ── Markdown 汇总表 ─────────────────────────────────────────
     print("\n\n=== RESUME TABLE (markdown) ===\n")
     headers_p = " | ".join(f"P@{k}" for k in args.k)
     headers_r = " | ".join(f"R@{k}" for k in args.k)

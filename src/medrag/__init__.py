@@ -1,1 +1,1 @@
-"""Medical RAG Q&A System."""
+"""基于 RAG 与大模型技术的医疗问答系统。"""

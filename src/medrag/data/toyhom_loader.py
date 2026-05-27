@@ -1,4 +1,4 @@
-"""Loader for the Toyhom Chinese medical dialogue CSV dataset."""
+"""Toyhom 中文医疗对话 CSV 数据集加载器。"""
 
 from __future__ import annotations
 
@@ -155,7 +155,7 @@ def _iter_csv_rows(csv_path: Path) -> Iterable[Dict[str, str]]:
 
 
 def load_toyhom_dataset(data_root, limit=None) -> List[Dict]:
-    """Load Toyhom CSV files recursively into a unified list of dictionaries."""
+    """递归加载 Toyhom CSV 文件，返回统一字典列表。"""
     root = Path(data_root).expanduser()
     if not root.exists():
         logger.warning(f"Toyhom data root does not exist: {root}")

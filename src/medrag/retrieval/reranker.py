@@ -1,12 +1,11 @@
-"""Rerankers for multi-source retrieval results.
+"""多源检索结果重排序器。
 
-Two strategies, sharing the same ``rerank(query, results, top_k)``
-interface:
+两种策略，共享相同的 ``rerank(query, results, top_k)`` 接口：
 
-  - CrossEncoderReranker  neural cross-encoder (production default)
-  - SimpleReranker        rule-based (zero-latency fallback)
+  - CrossEncoderReranker  神经网络交叉编码器（生产环境默认）
+  - SimpleReranker        规则评分（零延迟回退方案）
 
-Use ``get_reranker()`` to auto-select the best available one.
+使用 ``get_reranker()`` 自动选择最佳可用方案。
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from typing import Dict, List
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Shared helpers
+# 共享辅助函数
 # ---------------------------------------------------------------------------
 
 SOURCE_BONUS: Dict[str, float] = {
@@ -29,7 +28,7 @@ DEFAULT_SCORE = 0.50
 
 
 def _result_text(result: Dict) -> str:
-    """Combine all text-like fields in a result for matching / cross-encoding."""
+    """组合结果中所有文本类字段，用于匹配 / 交叉编码。"""
     parts: list[str] = []
     for key in ("answer", "text", "title", "question"):
         v = result.get(key, "")
@@ -44,7 +43,7 @@ def _result_text(result: Dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. SimpleReranker  (rule-based)
+# 1. SimpleReranker（规则评分）
 # ---------------------------------------------------------------------------
 
 KEYWORD_HIT_BONUS = 0.10
@@ -52,7 +51,7 @@ MAX_KEYWORD_BONUS = 0.30
 
 
 class SimpleReranker:
-    """Rule-based: source prior + keyword overlap."""
+    """规则评分：来源先验加权 + 关键词重叠。"""
 
     def rerank(self, query: str, results: List[Dict],
                top_k: int = 8) -> List[Dict]:
@@ -83,19 +82,19 @@ def _extract_keywords(query: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# 2. CrossEncoderReranker  (neural)
+# 2. CrossEncoderReranker（神经网络）
 # ---------------------------------------------------------------------------
 
 class CrossEncoderReranker:
-    """Neural cross-encoder for relevance scoring.
+    """神经网络交叉编码器，用于相关性评分。
 
-    Uses ``sentence-transformers`` CrossEncoder.  The model is downloaded
-    on first instantiation (~1 GB for ``BAAI/bge-reranker-base``).
+    使用 ``sentence-transformers`` CrossEncoder。模型在首次实例化时
+    下载（``BAAI/bge-reranker-base`` 约 1 GB）。
     """
 
     def __init__(self, model_name: str = "BAAI/bge-reranker-base"):
         self.model_name = model_name
-        self._model = None  # lazy load
+        self._model = None  # 延迟加载
 
     @property
     def model(self):
@@ -124,18 +123,18 @@ class CrossEncoderReranker:
 
 
 # ---------------------------------------------------------------------------
-# Factory: best-available reranker with fallback chain
+# 工厂函数：自动选择最佳可用的重排序器（含回退链）
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CROSS_MODEL = "BAAI/bge-reranker-base"
 
 
 def get_reranker(cross_model: str = _DEFAULT_CROSS_MODEL):
-    """Return the best available reranker.
+    """返回最佳可用的重排序器。
 
-    Priority: CrossEncoder → SimpleReranker (zero-dep fallback).
+    优先级：CrossEncoder → SimpleReranker（零依赖回退）。
 
-    Usage::
+    用法::
 
         reranker = get_reranker()
         ranked = reranker.rerank(query, results, top_k=8)

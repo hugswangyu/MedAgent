@@ -1,12 +1,12 @@
-"""Hybrid query router for the medical QA system.
+"""医疗问答系统混合查询路由器。
 
-Routes a user question to the appropriate retrieval source(s):
-  - neo4j_kg      structured medical KG (diseases, symptoms, drugs, diet, etc.)
-  - toyhom_qa     Toyhom medical QA vector store
+将用户问题路由到合适的检索源：
+  - neo4j_kg      结构化医学知识图谱（疾病、症状、药品、饮食等）
+  - toyhom_qa     Toyhom 医学问答向量库
 
-Supports two modes:
-  - LLM routing (default): semantic classification with rule fallback.
-  - Rule routing: fast keyword matching for environments without an LLM.
+支持两种模式：
+  - LLM 路由（默认）：语义分类，附带规则回退。
+  - 规则路由：快速关键词匹配，适用于没有 LLM 的环境。
 """
 
 from __future__ import annotations
@@ -20,38 +20,38 @@ from medrag.config.settings import settings
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Rule-based routing tables  (fallback & llm_client-less mode)
+# 规则路由表（回退模式 & 无 LLM 客户端模式）
 # ---------------------------------------------------------------------------
 
 _ROUTES: list[tuple[list[str], str, bool, bool]] = [
-    # --- medication ---
+    # --- 药品 ---
     (
         ["吃什么药", "用什么药", "药品", "药物", "药", "剂量", "用法用量",
          "不能吃什么药", "忌什么药", "生产商", "哪个厂"],
         "medication",
         True, True,
     ),
-    # --- diet ---
+    # --- 饮食 ---
     (
         ["吃什么", "不能吃什么", "宜吃", "忌吃", "饮食", "食谱",
          "忌口", "能吃什么", "不能吃什么"],
         "diet",
         True, True,
     ),
-    # --- department ---
+    # --- 科室 ---
     (
         ["挂什么科", "看什么科", "什么科室", "去哪个科", "哪个科",
          "科室", "挂号"],
         "department",
         True, True,
     ),
-    # --- test / examination ---
+    # --- 检查 / 检验 ---
     (
         ["检查", "做什么检查", "怎么查", "体检", "筛查"],
         "test_report",
         True, True,
     ),
-    # --- disease facts ---
+    # --- 疾病事实 ---
     (
         ["并发症", "并发", "引起什么", "导致什么", "预防", "治愈",
          "治疗周期", "能治好吗", "会死吗", "严重吗", "遗传吗",
@@ -60,14 +60,14 @@ _ROUTES: list[tuple[list[str], str, bool, bool]] = [
         "disease_fact",
         True, True,
     ),
-    # --- symptom consultation ---
+    # --- 症状咨询 ---
     (
         ["症状", "表现", "什么感觉", "征兆", "怎么知道",
          "是不是得了", "怎么判断", "确诊"],
         "symptom_consult",
         True, True,
     ),
-    # --- treatment ---
+    # --- 治疗 ---
     (
         ["治疗", "怎么办", "怎么治", "如何治", "治愈", "治好",
          "手术", "住院", "康复", "怎么处理", "如何缓解"],
@@ -78,7 +78,7 @@ _ROUTES: list[tuple[list[str], str, bool, bool]] = [
 
 _FALLBACK_QUERY_TYPE = "general_medical_qa"
 
-# Valid query_type values (used by both rule and LLM routing)
+# 有效的 query_type 值（规则和 LLM 路由均使用）
 QUERY_TYPES = [
     "disease_fact",
     "symptom_consult",
@@ -90,7 +90,7 @@ QUERY_TYPES = [
 ]
 
 # ---------------------------------------------------------------------------
-# LLM routing prompt  (kept short to minimise latency)
+# LLM 路由提示词（保持简练以降低延迟）
 # ---------------------------------------------------------------------------
 
 _ROUTER_SYSTEM = """你是一个医疗问答路由分类器。你的任务是根据用户问题，判断应该查询哪些信息源。
@@ -121,14 +121,14 @@ _ROUTER_USER = """用户问题: {query}
 JSON:"""
 
 # ---------------------------------------------------------------------------
-# Router
+# 路由器
 # ---------------------------------------------------------------------------
 
 
 class QueryRouter:
-    """Hybrid router: LLM-first with rule fallback.
+    """混合路由器：LLM 优先，附带规则回退。
 
-    Usage::
+    用法::
 
         from openai import OpenAI
         llm = OpenAI(api_key=..., base_url=...)
@@ -136,10 +136,10 @@ class QueryRouter:
         router = QueryRouter(llm_client=llm)
         decision = router.route("感冒了怎么办")
 
-        # Force rule mode:
+        # 强制规则模式:
         decision = router.route("...", use_llm=False)
 
-        # No LLM client → auto rule-only:
+        # 无 LLM 客户端 → 自动仅用规则:
         router = QueryRouter()
         decision = router.route("...")
     """
@@ -147,19 +147,18 @@ class QueryRouter:
     def __init__(self, llm_client=None):
         """
         Args:
-            llm_client: OpenAI-compatible client.  If None, always uses rules.
+            llm_client: 兼容 OpenAI 的客户端。若为 None，则始终使用规则。
         """
         self.llm = llm_client
 
     # ------------------------------------------------------------------
-    # Public API
+    # 公开 API
     # ------------------------------------------------------------------
 
     def route(self, query: str, use_llm: bool = True) -> Dict:
-        """Route *query* to retrieval sources.
+        """将 *query* 路由到检索源。
 
-        Returns dict with keys:
-            use_kg, use_toyhom_qa, reason, query_type
+        返回字典，键为：use_kg、use_toyhom_qa、reason、query_type。
         """
         if use_llm and self.llm is not None:
             result = self._llm_route(query)
@@ -169,11 +168,11 @@ class QueryRouter:
         return self._rule_route(query)
 
     # ------------------------------------------------------------------
-    # LLM routing
+    # LLM 路由
     # ------------------------------------------------------------------
 
     def _llm_route(self, query: str) -> Optional[Dict]:
-        """Try LLM-based routing.  Returns None on any failure."""
+        """尝试基于 LLM 的路由。任何失败均返回 None。"""
         try:
             response = self.llm.chat.completions.create(
                 model=settings.deepseek_default_model,
@@ -193,7 +192,7 @@ class QueryRouter:
 
     @staticmethod
     def _parse_llm_response(raw: str) -> Optional[Dict]:
-        """Parse LLM JSON output, translate short keys, validate."""
+        """解析 LLM JSON 输出，转换简写键名并验证。"""
         if not raw:
             return None
         try:
@@ -223,14 +222,14 @@ class QueryRouter:
             logger.debug("LLM route invalid query_type: %s", canonical["query_type"])
             return None
 
-        # Ensure at least one source is on
+        # 确保至少启用一个数据源
         if not (canonical["use_kg"] or canonical["use_toyhom_qa"]):
             canonical["use_toyhom_qa"] = True
 
         return canonical
 
     # ------------------------------------------------------------------
-    # Rule-based routing (fallback)
+    # 规则路由（回退）
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -254,7 +253,7 @@ class QueryRouter:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# 辅助函数
 # ---------------------------------------------------------------------------
 
 
