@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "medrag"
@@ -9,21 +9,4 @@ description = "Medical RAG Q&A System"
 requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]
-include = [
-    "auth",
-    "auth.*",
-    "config",
-    "config.*",
-    "data_processor",
-    "data_processor.*",
-    "llm",
-    "llm.*",
-    "rag",
-    "rag.*",
-    "retriever",
-    "retriever.*",
-    "service",
-    "service.*",
-    "vector_store",
-    "vector_store.*",
-]
+where = ["src"]
