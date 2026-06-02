@@ -24,15 +24,27 @@ class AnswerGenerator:
         self._model = self._provider.default_model
 
     # ------------------------------------------------------------------
+    # 工具方法
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _as_messages(prompt_or_messages: str | list[dict]) -> list[dict]:
+        """确保返回 messages 格式；传入字符串时自动包装为 user 消息。"""
+        if isinstance(prompt_or_messages, str):
+            return [{"role": "user", "content": prompt_or_messages}]
+        return prompt_or_messages
+
+    # ------------------------------------------------------------------
     # 公开 API
     # ------------------------------------------------------------------
 
-    def generate(self, prompt: str, model: str | None = None) -> str:
-        """发送 *prompt* 到 LLM，返回生成的回答文本。
+    def generate(self, prompt_or_messages: str | list[dict], model: str | None = None) -> str:
+        """发送 prompt 到 LLM，返回生成的回答文本。
 
         Args:
-            prompt: 完整的提示词字符串（通常来自
-                    :meth:`PromptBuilder.build_answer_prompt`）。
+            prompt_or_messages: 提示词字符串 或 messages 列表（来自
+                    :meth:`PromptBuilder.build_answer_prompt` /
+                    :meth:`PromptBuilder.build_messages`）。
             model: 可选模型名，覆盖构造时绑定的默认模型。
 
         Returns:
@@ -41,7 +53,7 @@ class AnswerGenerator:
         try:
             response = self._client.chat.completions.create(
                 model=model or self._model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=self._as_messages(prompt_or_messages),
             )
             return response.choices[0].message.content or ""
 
@@ -51,17 +63,17 @@ class AnswerGenerator:
                 f"请检查 API Key 是否正确、网络是否通畅。"
             )
 
-    def generate_stream(self, prompt: str, model: str | None = None):
+    def generate_stream(self, prompt_or_messages: str | list[dict], model: str | None = None):
         """流式调用 LLM，逐 token yield 文本片段。
 
         Args:
-            prompt: 完整的提示词字符串。
+            prompt_or_messages: 提示词字符串 或 messages 列表。
             model: 可选模型名，覆盖构造时绑定的默认模型。
         """
         try:
             response = self._client.chat.completions.create(
                 model=model or self._model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=self._as_messages(prompt_or_messages),
                 stream=True,
             )
             for chunk in response:

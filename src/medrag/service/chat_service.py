@@ -116,28 +116,10 @@ class MedicalChatService:
         retrieval = self.hybrid_retriever.retrieve(query, username=username)
 
         # 3. 重排序
-        reranked = self.reranker.rerank(
-            query,
-            retrieval["all_results"],
-            top_k=settings.rerank_top_k,
-        )
-
-        # 4. 计算检索质量
-        retrieval_quality = {
-            "has_kg": bool(retrieval["kg_results"]),
-            "has_qa": bool(retrieval["toyhom_results"]),
-            "has_case": bool(retrieval.get("case_results")),
-            "confidence": (
-                "high" if (retrieval["kg_results"] or retrieval["toyhom_results"] or retrieval.get("case_results"))
-                else "none"
-            ),
-        }
-
-        # 5. 构建提示词
         if user_case_summary is None and username:
             user_case_summary = get_combined_case_summary(username)
 
-        prompt = self.prompt_builder.build_answer_prompt(
+        messages = self.prompt_builder.build_messages(
             query=query,
             kg_results=retrieval["kg_results"],
             toyhom_results=retrieval["toyhom_results"],
@@ -149,11 +131,13 @@ class MedicalChatService:
         )
 
         # 6. 生成回答
-        answer = self.answer_generator.generate(prompt)
+        answer = self.answer_generator.generate(messages)
 
         # 7. 注入安全提示
+        query_type = retrieval.get("route", {}).get("query_type")
         answer = self.safety_guard.append_safety_notice(
             answer, risk_info, retrieval_quality=retrieval_quality["confidence"],
+            query_type=query_type,
         )
 
         return {
@@ -240,7 +224,7 @@ class MedicalChatService:
         if user_case_summary is None and username:
             user_case_summary = get_combined_case_summary(username)
 
-        prompt = self.prompt_builder.build_answer_prompt(
+        messages = self.prompt_builder.build_messages(
             query=query,
             kg_results=retrieval["kg_results"],
             toyhom_results=retrieval["toyhom_results"],
@@ -277,13 +261,15 @@ class MedicalChatService:
             "step": {"key": "generate", "label": "生成回答", "icon": "✨"},
         }
         full_answer = ""
-        for token in answer_gen.generate_stream(prompt, model=model):
+        for token in answer_gen.generate_stream(messages, model=model):
             full_answer += token
             yield {"type": "content", "content": token}
 
         # 7. 安全提示尾注（作为最后一个 content 事件发送）
+        query_type = retrieval.get("route", {}).get("query_type")
         footer = self.safety_guard.append_safety_notice(
             "", risk_info, retrieval_quality=retrieval_quality["confidence"],
+            query_type=query_type,
         )
         if footer.strip():
             yield {"type": "content", "content": "\n\n" + footer}

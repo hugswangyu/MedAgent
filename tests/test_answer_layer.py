@@ -95,31 +95,33 @@ class TestPromptBuilderRetrievalQuality:
     def test_no_retrieval_quality_no_note(self, builder):
         """不传 retrieval_quality 时不注入置信度标记。"""
         prompt = builder.build_answer_prompt(query="感冒了怎么办")
-        assert "知识库中未检索到直接相关资料" not in prompt
+        assert "知识库中未检索到相关资料" not in prompt
 
     def test_high_confidence_no_note(self, builder):
-        """高置信度时不注入置信度警告。"""
+        """高置信度时走 Tier 1 完整回答（有引用要求）。"""
         prompt = builder.build_answer_prompt(
             query="感冒了怎么办",
             retrieval_quality={"has_kg": True, "has_qa": False, "confidence": "high"},
         )
-        assert "知识库中未检索到直接相关资料" not in prompt
+        assert "如 [KG-1]、[QA-2]、[CASE-1]" in prompt
 
     def test_none_confidence_injects_note(self, builder):
-        """空检索时注入置信度警告。"""
+        """空检索时走 Tier 2 安全回答。"""
         prompt = builder.build_answer_prompt(
             query="感冒了怎么办",
             retrieval_quality={"has_kg": False, "has_qa": False, "confidence": "none"},
         )
-        assert "知识库中未检索到直接相关资料" in prompt
+        assert "未找到确切信息" in prompt
+        assert "建议咨询专业医生" in prompt
 
     def test_low_confidence_injects_note(self, builder):
-        """低置信度时注入置信度警告。"""
+        """低置信度时走 Tier 2 安全回答。"""
         prompt = builder.build_answer_prompt(
             query="感冒了怎么办",
             retrieval_quality={"has_kg": True, "has_qa": False, "confidence": "low"},
         )
-        assert "知识库中未检索到直接相关资料" in prompt
+        assert "未找到确切信息" in prompt
+        assert "建议咨询专业医生" in prompt
 
 
 class TestPromptBuilderContextAssembly:
@@ -264,7 +266,7 @@ class TestSafetyGuardDisclaimers:
 
     def test_high_disclaimer(self, guard):
         msg = guard.get_retrieval_disclaimer("high")
-        assert "具体以医生意见为准" in msg
+        assert "请咨询医生确认后使用" in msg
 
     def test_low_disclaimer(self, guard):
         msg = guard.get_retrieval_disclaimer("low")

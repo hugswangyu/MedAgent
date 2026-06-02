@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+# 非医学问题类型——不需要附加"请咨询医生"声明
+_NON_MEDICAL_TYPES = frozenset({"department", "diet"})
 
 # ---------------------------------------------------------------------------
 # 红色信号（立即急诊 — 回答开头插入警告）
@@ -60,21 +63,17 @@ _YELLOW_WARNING = (
 # ---------------------------------------------------------------------------
 
 RETRIEVAL_DISCLAIMERS: Dict[str, str] = {
-    "high": "以上基于通用医学知识，具体以医生意见为准。",
+    "high": "以上信息基于已检索到的医学资料，请咨询医生确认后使用。",
     "low": "检索到的资料存在差异或不完整，请以医生意见为准。",
-    "none": "该问题在知识库中未检索到相关信息，基于通用医学知识提供参考，请务必核实。",
+    "none": "该问题在知识库中未检索到相关信息，请咨询专业医生。",
 }
 
 _DEFAULT_DISCLAIMER = "以上内容仅用于健康科普和就医参考，不能替代医生面诊。"
 
 
-def _llm_already_wrote_disclaimer(answer: str) -> bool:
-    """检查 LLM 是否已在⑤不确定性说明中写过免责声明。
-
-    若答案中已包含「不确定性说明」标题字样，说明 LLM 已按五层结构
-    输出了⑤层，系统不再追加外层免责声明，避免重复。
-    """
-    return "不确定性说明" in answer or "不确定性" in answer
+def _needs_disclaimer(query_type: Optional[str]) -> bool:
+    """非医学问题类型不需要医疗声明（如科室咨询）。"""
+    return query_type not in _NON_MEDICAL_TYPES
 
 
 class SafetyGuard:
@@ -138,12 +137,13 @@ class SafetyGuard:
         answer: str,
         risk_info: Dict,
         retrieval_quality: str = "high",
+        query_type: Optional[str] = None,
     ) -> str:
         """根据 *risk_info* 和 *retrieval_quality* 注入分级安全提示。
 
         - 红色信号 → 在开头添加紧急就医警告。
         - 黄色信号 → 在末尾添加尽快就医提醒。
-        - 若 LLM 已输出⑤不确定性说明，不再追加系统免责声明。
+        - 医疗类问题 → 末尾追加检索质量免责声明（非医学问题跳过）。
         """
         parts: List[str] = []
 
@@ -158,8 +158,8 @@ class SafetyGuard:
         if risk_level == "yellow":
             parts.append(risk_info.get("safety_message", _YELLOW_WARNING))
 
-        # 免责声明：若 LLM 已写过⑤则跳过
-        if not _llm_already_wrote_disclaimer(answer):
+        # 免责声明：仅医疗类问题追加
+        if _needs_disclaimer(query_type):
             disclaimer = RETRIEVAL_DISCLAIMERS.get(
                 retrieval_quality, _DEFAULT_DISCLAIMER
             )

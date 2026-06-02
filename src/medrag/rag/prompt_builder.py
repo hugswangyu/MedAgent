@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 from medrag.prompts import (
     MEDICAL_ANSWER_PROMPT,
+    NO_RETRIEVAL_ANSWER_PROMPT,
     QUERY_TYPE_HINTS,
     ANSWER_STYLE_HINTS,
     CONTEXT_CASE_HEADER,
@@ -18,38 +19,33 @@ from medrag.prompts import (
 MAX_PER_SOURCE = 5          # 每个来源在提示词中的最大结果数
 MAX_RESULT_CHARS = 400      # 每条结果截断长度
 
-# 检索置信度指令
-_CONFIDENCE_NONE = (
-    "\n\n⚠️ **系统提示**：知识库中未检索到直接相关资料。"
-    '请基于通用医学知识回答，并在⑤中标注“该信息未在知识库中检索到，'
-    '基于通用医学知识提供参考，请务必核实”。'
-    '绝对禁止因缺少检索资料而拒答基础医学事实。'
-)
-_CONFIDENCE_LOW = (
-    '\n\n⚠️ **系统提示**：检索到的资料置信度较低或存在矛盾。'
-    '回答时请在⑤中标注“不同资料对此存在差异，请以医生意见为准”。'
-)
-_CONFIDENCE_NONE_NOTE = '\n\n⚠️ 知识库中未检索到直接相关资料，请基于通用医学知识回答，并标注不确定性。'
-
 
 class PromptBuilder:
     """将多源检索结果组装为完整的答案生成提示词。
 
-    用法::
-
-        builder = PromptBuilder()
-        prompt = builder.build_answer_prompt(
-            query="感冒了怎么办",
-            kg_results=kg_results,
-            toyhom_results=toyhom_results,
-            case_context=None,
-            route=route,
-            retrieval_quality={"has_kg": True, "has_qa": False, "confidence": "high"},
-        )
-        # → 将 *prompt* 喂给 DeepSeek / OpenAI
+    两层设计：
+    - Tier 1（检索完整、一致、高置信）：基于检索回答 + 标注来源 + 结尾"请咨询医生确认"
+    - Tier 2（其他所有情况）：统一回答"未找到确切信息，建议咨询专业医生"，不提供任何医学内容
     """
 
-    def build_answer_prompt(
+    # ------------------------------------------------------------------
+    # 公开 API
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_tier1(retrieval_quality: Optional[Dict]) -> bool:
+        """Tier 1 条件：检索到资料且置信度为 high。
+
+        未传入 retrieval_quality 时默认走 Tier 1（向后兼容）。
+        生产中 chat_service 始终会传入，主动触发 Tier 2 降级。
+        """
+        if not retrieval_quality:
+            return True
+        has_data = retrieval_quality.get("has_kg") or retrieval_quality.get("has_qa")
+        confidence = retrieval_quality.get("confidence", "high")
+        return bool(has_data) and confidence == "high"
+
+    def _build_prompt_parts(
         self,
         query: str,
         kg_results: Optional[List[Dict]] = None,
@@ -59,17 +55,50 @@ class PromptBuilder:
         route: Optional[Dict] = None,
         retrieval_quality: Optional[Dict] = None,
         query_info: Optional[Dict] = None,
-    ) -> str:
-        """构建用于回答 LLM 的最终提示词字符串。
+    ) -> tuple[str, str]:
+        """返回 (system_part, user_part) 两个字符串。"""
+        if self._is_tier1(retrieval_quality):
+            return self._build_tier1_parts(
+                query=query,
+                kg_results=kg_results,
+                toyhom_results=toyhom_results,
+                case_results=case_results,
+                case_context=case_context,
+                route=route,
+                query_info=query_info,
+            )
+        return self._build_tier2_parts(query)
 
-        Args:
-            query: 用户原始问题。
-            kg_results: KGRetriever.search() 输出（已重排序）。
-            toyhom_results: ToyhomQARetriever.search() 输出（已重排序）。
-            case_context: 预先计算的用户病例摘要，或 None。
-            route: 路由器决策字典，query_type 用于注入分类指令。
-            retrieval_quality: {"has_kg": bool, "has_qa": bool, "confidence": "high"/"low"/"none"}。
-        """
+    def build_answer_prompt(self, *args, **kwargs) -> str:
+        """构建完整提示词字符串（向后兼容）。"""
+        system, user = self._build_prompt_parts(*args, **kwargs)
+        return system + user
+
+    def build_messages(self, *args, **kwargs) -> list[dict]:
+        """返回结构化的消息列表，供 LLM 调用时使用 system/user 角色分离。"""
+        system, user = self._build_prompt_parts(*args, **kwargs)
+        if system:
+            return [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
+        return [{"role": "user", "content": user}]
+
+    # ------------------------------------------------------------------
+    # Tier 1：完整回答构建
+    # ------------------------------------------------------------------
+
+    def _build_tier1_parts(
+        self,
+        query: str,
+        kg_results: Optional[List[Dict]] = None,
+        toyhom_results: Optional[List[Dict]] = None,
+        case_results: Optional[List[Dict]] = None,
+        case_context: Optional[str] = None,
+        route: Optional[Dict] = None,
+        query_info: Optional[Dict] = None,
+    ) -> tuple[str, str]:
+        """构建 Tier 1 回答：基于检索资料 + 标注来源 + 结尾提示。"""
         # --- 根据 query_type 注入分类指令 ---
         query_type = (
             route.get("query_type", "general_medical_qa")
@@ -80,23 +109,13 @@ class PromptBuilder:
         if case_context or case_results:
             answer_style = "case_based"
         style_hint = ANSWER_STYLE_HINTS.get(answer_style, ANSWER_STYLE_HINTS["general_guidance"])
-        system_prompt = (
+        system = (
             MEDICAL_ANSWER_PROMPT
             + "\n\n## 当前问题类型\n"
             + type_hint
             + "\n\n## 当前回答风格\n"
             + style_hint
         )
-
-        # --- 检索置信度指令 ---
-        confidence_note = ""
-        if retrieval_quality:
-            has_any = retrieval_quality.get("has_kg") or retrieval_quality.get("has_qa")
-            conf = retrieval_quality.get("confidence", "high")
-            if not has_any or conf == "none":
-                confidence_note = _CONFIDENCE_NONE_NOTE
-            elif conf == "low":
-                confidence_note = _CONFIDENCE_NONE_NOTE
 
         # --- 组装上下文块 ---
         sections: list[str] = []
@@ -131,16 +150,24 @@ class PromptBuilder:
         else:
             sections.append(CONTEXT_TOYHOM_HEADER.format(qa_text=CONTEXT_EMPTY_NOTE))
 
-        # --- 最终提示词 ---
         context = "\n".join(sections)
         query_block = self._format_query_block(query, query_info)
-        return (
-            system_prompt
-            + confidence_note
-            + context
+        user = (
+            context
             + query_block
-            + "\n\n请根据以上资料回答用户的问题。"
+            + "\n\n请严格根据以上检索资料回答用户的问题，"
+            "并在每个医学结论后标注来源。"
         )
+        return system, user
+
+    # ------------------------------------------------------------------
+    # Tier 2：无检索结果的安全回答
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_tier2_parts(query: str) -> tuple[str, str]:
+        """构建 Tier 2 安全回答：直接输出固定话术，不提供任何医学内容。"""
+        return ("", NO_RETRIEVAL_ANSWER_PROMPT.format(query=query))
 
     # ------------------------------------------------------------------
     # 格式化辅助方法
@@ -155,7 +182,7 @@ class PromptBuilder:
             answer = r.get("answer", "")
             if len(answer) > MAX_RESULT_CHARS:
                 answer = answer[:MAX_RESULT_CHARS] + "…"
-            lines.append(f"[{i}] ({intent}) {answer}")
+            lines.append(f"[KG-{i}] ({intent}) {answer}")
         return "\n".join(lines)
 
     @staticmethod
@@ -169,7 +196,7 @@ class PromptBuilder:
             if len(text) > MAX_RESULT_CHARS:
                 text = text[:MAX_RESULT_CHARS] + "…"
             department = r.get("department", "")
-            prefix = f"[{i}] "
+            prefix = f"[QA-{i}] "
             if department:
                 prefix += f"科室：{department} | "
             lines.append(f"{prefix}{text}")
@@ -184,7 +211,7 @@ class PromptBuilder:
             text = r.get("answer") or r.get("text") or ""
             if len(text) > MAX_RESULT_CHARS:
                 text = text[:MAX_RESULT_CHARS] + "…"
-            prefix = f"[{i}] "
+            prefix = f"[CASE-{i}] "
             if filename:
                 prefix += f"文件：{filename} | "
             lines.append(f"{prefix}{text}")
