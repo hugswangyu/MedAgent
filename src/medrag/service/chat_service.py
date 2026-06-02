@@ -116,6 +116,24 @@ class MedicalChatService:
         retrieval = self.hybrid_retriever.retrieve(query, username=username)
 
         # 3. 重排序
+        reranked = self.reranker.rerank(
+            query,
+            retrieval["all_results"],
+            top_k=settings.rerank_top_k,
+        )
+
+        # 4. 计算检索质量
+        retrieval_quality = {
+            "has_kg": bool(retrieval["kg_results"]),
+            "has_qa": bool(retrieval["toyhom_results"]),
+            "has_case": bool(retrieval.get("case_results")),
+            "confidence": (
+                "high" if (retrieval["kg_results"] or retrieval["toyhom_results"] or retrieval.get("case_results"))
+                else "none"
+            ),
+        }
+
+        # 5. 构建提示词
         if user_case_summary is None and username:
             user_case_summary = get_combined_case_summary(username)
 
