@@ -8,13 +8,16 @@ Key design:
   - FilterByCategory: stable category enumeration (no scoring).
   - Consolidate: decay → dedup+merge → expire, all in-place on self._items.
   - TF-IDF fallback: when no embedding provided, tokenize by Chinese chars + English words.
+  - Persistence: optional JSON auto-save/load via ``persist_path``.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -88,13 +91,18 @@ class LongTermMemory:
         results = ltm.recall_by_filter("过敏", query_embedding=emb)
     """
 
-    def __init__(self):
+    def __init__(self, persist_path: Optional[str] = None):
         self._items: List[MemoryItem] = []
         self._vocab_id: Dict[str, int] = {}      # token → index
         self._vocab: List[str] = []               # index → token
         self._next_id: int = 0
         self._store_count: int = 0
         self._consolidation_cfg: Optional[ConsolidationConfig] = None
+        self._persist_path: Optional[Path] = Path(persist_path) if persist_path else None
+
+        # ── Auto-load from disk ──
+        if self._persist_path and self._persist_path.exists():
+            self.load()
 
     # ------------------------------------------------------------------
     # Config
@@ -198,6 +206,7 @@ class LongTermMemory:
         self._items.append(item)
         self._next_id += 1
         self._store_count += 1
+        self._auto_save()
         return True
 
     def store_item(self, item: MemoryItem) -> None:
@@ -213,6 +222,7 @@ class LongTermMemory:
         if item.last_accessed is None:
             item.last_accessed = item.created_at
         self._items.append(item)
+        self._auto_save()
 
     # ------------------------------------------------------------------
     # Recall
@@ -470,6 +480,43 @@ class LongTermMemory:
                 merged.embedding = (base.embedding * w_a + other.embedding * w_b) / total
 
         return merged
+
+    # ------------------------------------------------------------------
+    # Persistence (JSON auto-save/load)
+    # ------------------------------------------------------------------
+
+    def save(self) -> None:
+        """Save all memory items to JSON file."""
+        if self._persist_path is None:
+            return
+        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "next_id": self._next_id,
+            "items": [item.to_dict() for item in self._items],
+        }
+        with open(self._persist_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def load(self) -> None:
+        """Load memory items from JSON file (replaces current state)."""
+        if self._persist_path is None or not self._persist_path.exists():
+            return
+        try:
+            with open(self._persist_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._items = [MemoryItem.from_dict(item) for item in data.get("items", [])]
+            self._next_id = data.get("next_id", len(self._items))
+            self._rebuild_vocab()
+        except Exception:
+            logger.warning("Failed to load memory from %s", self._persist_path, exc_info=True)
+
+    def _auto_save(self) -> None:
+        """Auto-save hook called after every store operation."""
+        if self._persist_path is not None:
+            try:
+                self.save()
+            except Exception:
+                logger.debug("Memory auto-save failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Utilities

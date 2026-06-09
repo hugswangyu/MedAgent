@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from typing import Dict, Generator, Optional
 
+import numpy as np
+
 from medrag.config.settings import settings
 from medrag.llm import get_llm_client, get_llm_provider
 from medrag.rag import PromptBuilder, AnswerGenerator, SafetyGuard
@@ -58,6 +60,7 @@ class MedicalChatService:
         case_retriever=None,        # UserCaseRetriever 或 None → 自动创建
         normalizer=None,            # QueryNormalizer 或 None → 自动创建
         memory_system=None,         # MemorySystem 或 None → 自动创建单例
+        memory_persist_path=None,   # Memory JSON 持久化路径（None=不持久化）
     ):
         # ---- 共享 LLM 客户端 ----
         _llm_client = get_llm_client()
@@ -97,7 +100,13 @@ class MedicalChatService:
         self.safety_guard = safety_guard or SafetyGuard()
 
         # ---- 记忆系统 ----
-        self.memory = memory_system or get_memory_system()
+        if memory_system is not None:
+            self.memory = memory_system
+        elif memory_persist_path is not None:
+            from medrag.memory import create_memory_system
+            self.memory = create_memory_system(persist_path=memory_persist_path)
+        else:
+            self.memory = get_memory_system()
 
     # ------------------------------------------------------------------
     # 公开 API
@@ -112,6 +121,19 @@ class MedicalChatService:
             self._tool_registry = get_tool_registry()
             type(self)._tools_checked = True
         return self._tool_registry
+
+    def _get_query_embedding(self, query: str):
+        """Try to extract query embedding from the QA retriever for memory storage.
+
+        Returns np.ndarray or None if embedding model is unavailable.
+        """
+        try:
+            qa = getattr(self.hybrid_retriever, 'qa', None)
+            if qa is not None and hasattr(qa, 'embedding_model'):
+                return np.array(qa.embedding_model.encode_one(query, is_query=True))
+        except Exception:
+            logger.debug("Query embedding unavailable for memory", exc_info=True)
+        return None
 
     def chat(
         self,
@@ -362,18 +384,25 @@ class MedicalChatService:
             query_info=retrieval.get("query_info"),
         )
 
-        # 6. 记忆上下文注入
-        mem_context = self.memory.build_context(query)
-        if mem_context and messages and messages[0]["role"] == "system":
-            messages[0]["content"] = f"{mem_context}\n\n{messages[0]['content']}"
+        # 6. 获取 query embedding（用于 LTM 语义召回增强）
+        query_emb = self._get_query_embedding(query)
 
-        # 记录用户消息
-        self.memory.add_message("user", query)
+        # 7. 置信度联动：低置信时不注入记忆上下文（避免误导）
+        if retrieval_quality.get("confidence") != "none":
+            mem_context = self.memory.build_context(query, query_embedding=query_emb)
+            if mem_context and messages and messages[0]["role"] == "system":
+                messages[0]["content"] = f"{mem_context}\n\n{messages[0]['content']}"
 
-        # 7. 生成
+        # 记录用户消息（带 embedding，提升 LTM 内联去重和召回质量）
+        if query_emb is not None:
+            self.memory.add_message_with_embedding("user", query, query_emb)
+        else:
+            self.memory.add_message("user", query)
+
+        # 8. 生成
         answer = self.answer_generator.generate(messages)
 
-        # 8. 安全提示
+        # 9. 安全提示
         answer = self.safety_guard.append_safety_notice(
             answer, risk_info,
             retrieval_quality=retrieval_quality["confidence"],
@@ -465,13 +494,20 @@ class MedicalChatService:
             query_info=retrieval.get("query_info"),
         )
 
-        # 记忆上下文注入
-        mem_context = self.memory.build_context(query)
-        if mem_context and messages and messages[0]["role"] == "system":
-            messages[0]["content"] = f"{mem_context}\n\n{messages[0]['content']}"
+        # 获取 query embedding（用于 LTM 语义召回增强）
+        query_emb = self._get_query_embedding(query)
 
-        # 记录用户消息
-        self.memory.add_message("user", query)
+        # 置信度联动：低置信时不注入记忆上下文
+        if retrieval_quality.get("confidence") != "none":
+            mem_context = self.memory.build_context(query, query_embedding=query_emb)
+            if mem_context and messages and messages[0]["role"] == "system":
+                messages[0]["content"] = f"{mem_context}\n\n{messages[0]['content']}"
+
+        # 记录用户消息（带 embedding，提升 LTM 内联去重和召回质量）
+        if query_emb is not None:
+            self.memory.add_message_with_embedding("user", query, query_emb)
+        else:
+            self.memory.add_message("user", query)
 
         # 溯源信息
         rag_trace = {

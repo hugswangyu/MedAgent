@@ -41,6 +41,7 @@ class MemoryItem:
             "id": self.id,
             "content": self.content,
             "importance": self.importance,
+            "embedding": self.embedding.tolist() if self.embedding is not None else None,
             "score": self.score,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "last_accessed": self.last_accessed.isoformat() if self.last_accessed else None,
@@ -48,6 +49,30 @@ class MemoryItem:
             "tags": list(self.tags),
             "slot_hint": self.slot_hint,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> MemoryItem:
+        emb = None
+        if data.get("embedding") is not None:
+            emb = np.array(data["embedding"], dtype=np.float64)
+        created = None
+        if data.get("created_at"):
+            created = datetime.fromisoformat(data["created_at"])
+        last_acc = None
+        if data.get("last_accessed"):
+            last_acc = datetime.fromisoformat(data["last_accessed"])
+        return cls(
+            id=data["id"],
+            content=data["content"],
+            importance=data.get("importance", 0.5),
+            embedding=emb,
+            score=data.get("score", 0.0),
+            created_at=created,
+            last_accessed=last_acc,
+            category=data.get("category", "general"),
+            tags=list(data.get("tags", [])),
+            slot_hint=data.get("slot_hint", ""),
+        )
 
 
 @dataclass

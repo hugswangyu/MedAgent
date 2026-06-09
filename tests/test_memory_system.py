@@ -197,6 +197,65 @@ class TestConsolidation:
 # ============================================================================
 
 
+class TestMemoryPersistence:
+    """JSON 持久化 save/load 测试。"""
+
+    def test_save_and_load(self, tmp_path):
+        persist = tmp_path / "memory.json"
+        ms = MemorySystem(persist_path=str(persist))
+        ms.remember("高血压病史", importance=0.9, category="fact", tags=["medical"])
+        ms.remember("对青霉素过敏", importance=0.8, category="fact", tags=["medical", "allergy"])
+        assert ms.stats["ltm_count"] == 2
+
+        # 新建一个 MemorySystem 读取同一文件，应恢复 2 条记忆
+        ms2 = MemorySystem(persist_path=str(persist))
+        assert ms2.stats["ltm_count"] == 2
+        results = ms2.recall("过敏")
+        assert any("青霉素" in r.content for r in results)
+
+    def test_persistence_roundtrip_with_embedding(self, tmp_path):
+        persist = tmp_path / "memory.json"
+        ms = MemorySystem(persist_path=str(persist))
+        emb = np.array([0.1, 0.2, 0.3], dtype=np.float64)
+        ms.remember("高血压注意事项", importance=0.9, embedding=emb)
+        ms.remember("糖尿病饮食", importance=0.7)
+        assert ms.stats["ltm_count"] == 2
+
+        ms2 = MemorySystem(persist_path=str(persist))
+        assert ms2.stats["ltm_count"] == 2
+        # 验证 embedding 正确恢复
+        items = ms2.long_term.items
+        for item in items:
+            if "高血压" in item.content:
+                assert item.embedding is not None
+                assert np.allclose(item.embedding, emb)
+                break
+        else:
+            pytest.fail("高血压 item not found")
+
+    def test_no_persist_does_not_save(self):
+        ms = MemorySystem()  # no persist_path
+        ms.remember("测试内容", importance=0.5)
+        assert ms.stats["ltm_count"] == 1
+        # 不传 persist_path 时不应创建文件
+        assert ms.long_term._persist_path is None
+
+    def test_load_nonexistent_file(self, tmp_path):
+        persist = tmp_path / "nonexistent.json"
+        ms = MemorySystem(persist_path=str(persist))
+        assert ms.stats["ltm_count"] == 0
+
+    def test_clear_keeps_persistence(self, tmp_path):
+        persist = tmp_path / "memory.json"
+        ms = MemorySystem(persist_path=str(persist))
+        ms.remember("测试", importance=0.5)
+        ms.clear()
+        assert ms.stats["ltm_count"] == 0
+        # 清除后存新数据不应报错
+        ms.remember("新测试", importance=0.5)
+        assert ms.stats["ltm_count"] == 1
+
+
 class TestChatServiceMemoryIntegration:
     """验证 chat_service 各 handler 正确与 MemorySystem 交互。"""
 

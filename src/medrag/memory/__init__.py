@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .classifier import classify_memory_content
+from .classifier import classify_memory_content, get_importance
 from .graph_memory import GraphMemory
 from .long_term import LongTermMemory
 from .preference import PreferenceStore
@@ -45,10 +45,11 @@ class MemorySystem:
         max_turns: int = 5,
         consolidation: Optional[ConsolidationConfig] = None,
         kg_store=None,
+        persist_path: Optional[str] = None,
     ):
         self.short_term = ShortTermMemory(max_turns=max_turns)
         self.preferences = PreferenceStore()
-        self.long_term = LongTermMemory()
+        self.long_term = LongTermMemory(persist_path=persist_path)
         self._consolidation_cfg = consolidation or ConsolidationConfig()
         self.long_term.set_consolidation_config(self._consolidation_cfg)
         self.graph = GraphMemory(self.long_term, kg_store=kg_store)
@@ -76,8 +77,9 @@ class MemorySystem:
 
             # ── Store classifiable content as long-term memory ──
             cat, tags, hint = classify_memory_content(content)
-            if cat != "general":
-                self.remember(content, importance=0.6,
+            imp = get_importance(cat)
+            if cat != "general" and imp > 0:
+                self.remember(content, importance=imp,
                               category=cat, tags=tags, slot_hint=hint)
 
     def add_message_with_embedding(self, role: str, content: str,
@@ -92,8 +94,9 @@ class MemorySystem:
         if role == "user":
             self.preferences.extract_and_save(content)
             cat, tags, hint = classify_memory_content(content)
-            if cat != "general":
-                self.remember(content, importance=0.6,
+            imp = get_importance(cat)
+            if cat != "general" and imp > 0:
+                self.remember(content, importance=imp,
                               embedding=embedding,
                               category=cat, tags=tags, slot_hint=hint)
 
@@ -107,8 +110,9 @@ class MemorySystem:
 
         # Classify and store assistant reply content
         cat, tags, hint = classify_memory_content(content)
-        if cat != "general":
-            self.remember(content, importance=0.5,
+        imp = get_importance(cat) * 0.8  # assistant side slightly discounted
+        if cat != "general" and imp > 0:
+            self.remember(content, importance=imp,
                           embedding=embedding,
                           category=cat, tags=tags, slot_hint=hint)
 
@@ -214,8 +218,16 @@ class MemorySystem:
 
     def clear(self) -> None:
         """Clear all memory layers."""
+        persist_path = self.long_term._persist_path
+        # Delete persistence file so new LTM starts empty
+        if persist_path and persist_path.exists():
+            try:
+                persist_path.unlink()
+            except Exception:
+                pass
         self.short_term.clear()
-        self.long_term = LongTermMemory()
+        self.long_term = LongTermMemory(persist_path=str(persist_path) if persist_path else None)
+        self.long_term.set_consolidation_config(self._consolidation_cfg)
         self.graph = GraphMemory(self.long_term)
         self.preferences = PreferenceStore()
         self._msg_count = 0
@@ -254,9 +266,10 @@ def get_memory_system() -> MemorySystem:
 
 
 def create_memory_system(max_turns: int = 5,
-                          kg_store=None) -> MemorySystem:
+                          kg_store=None,
+                          persist_path: Optional[str] = None) -> MemorySystem:
     """Create a fresh MemorySystem (useful for per-session isolation)."""
-    return MemorySystem(max_turns=max_turns, kg_store=kg_store)
+    return MemorySystem(max_turns=max_turns, kg_store=kg_store, persist_path=persist_path)
 
 
 __all__ = [

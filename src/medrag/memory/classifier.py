@@ -1,11 +1,40 @@
 """Memory content classifier — rule-based with LLM fallback.
 
 Mirrors AGI-saber classifyMemoryContent() in agent/agent.go.
+
+Medical-adapted: ``get_importance()`` maps category to priority score
+so medical facts get higher importance than general chat.
 """
 
 from __future__ import annotations
 
 from typing import List, Tuple
+
+# ---------------------------------------------------------------------------
+# Medical importance mapping
+# ---------------------------------------------------------------------------
+# Each category gets an automatic importance score for LTM storage.
+# Medical facts get the highest priority; general chat is skipped.
+# ---------------------------------------------------------------------------
+
+CATEGORY_IMPORTANCE = {
+    "fact":         0.80,  # medical facts, allergies, diagnoses
+    "identity":     0.70,  # user name, demographics
+    "episodic":     0.60,  # past events, experiences
+    "policy":       0.60,  # constraints, rules
+    "preference":   0.50,  # likes, dislikes, habits
+    "tool_failure": 0.45,  # tool call errors
+    "general":      0.0,   # uncategorized → skip LTM
+}
+
+
+def get_importance(category: str) -> float:
+    """Return the default importance for a memory category.
+
+    Medical facts (``fact``) automatically get 0.8 importance,
+    while general chat returns 0.0 (skip LTM storage).
+    """
+    return CATEGORY_IMPORTANCE.get(category, 0.0)
 
 
 def classify_memory_content(content: str) -> Tuple[str, List[str], str]:
@@ -14,14 +43,14 @@ def classify_memory_content(content: str) -> Tuple[str, List[str], str]:
     Rule-based first; returns ("general", [], "") if no rule matches.
     LLM fallback slot available via ``llm_classify()``.
 
-    Category values:
-      identity     — user name, demographics
-      preference   — likes, dislikes, habits
-      fact         — medical facts, diagnoses, allergies
-      episodic     — specific events, experiences
-      tool_failure — tool call errors
-      policy       — constraints, rules
-      general      — uncategorized (default)
+    Category values (ordered by medical priority):
+      fact         — medical facts, diagnoses, allergies (importance 0.80)
+      identity     — user name, demographics (importance 0.70)
+      episodic     — specific events, experiences (importance 0.60)
+      policy       — constraints, rules (importance 0.60)
+      preference   — likes, dislikes, habits (importance 0.50)
+      tool_failure — tool call errors (importance 0.45)
+      general      — uncategorized (importance 0.0 → skipped)
     """
     combined = content
 
