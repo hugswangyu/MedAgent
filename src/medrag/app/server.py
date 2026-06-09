@@ -82,10 +82,14 @@ app.include_router(documents.router, prefix="/documents", tags=["documents"])
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok" if _chat_service else "degraded",
-        "chat_service_error": _chat_service_error,
-    }
+    from medrag.infrastructure.health import get_summary
+    summary = get_summary()
+    if _chat_service is None:
+        summary["chat_service_available"] = False
+        summary["chat_service_error"] = _chat_service_error
+    else:
+        summary["chat_service_available"] = True
+    return summary
 
 
 # 静态文件（必须在最后注册，捕获所有未匹配的路由）

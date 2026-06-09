@@ -441,9 +441,16 @@ class TestChatServiceMemoryIntegration:
         assert service.memory.stats["stm_count"] == 2
 
     def test_stream_react_records_memory(self, service):
-        """流式 ReAct：应当记录记忆。"""
-        list(service._stream_react_stub("帮我分析", {"execution_mode": "react"}))
-        assert service.memory.stats["stm_count"] == 2
+        """流式 ReAct：流结束后应当记录记忆。"""
+        from medrag.llm.provider import get_llm_provider
+        prov = get_llm_provider()
+        with patch.object(prov.client.chat.completions, "create") as mock_llm:
+            mock_response = type('obj', (object,), {
+                'choices': [type('obj', (object,), {'message': type('obj', (object,), {'content': '最终答案：分析结果'})})()]
+            })
+            mock_llm.return_value = mock_response
+            list(service._stream_react("帮我分析", {"execution_mode": "react"}))
+            assert service.memory.stats["stm_count"] == 2
 
     def test_main_chat_dispatch_integration(self, service):
         """chat() 主入口：规则路由走 RAG 并记录记忆。"""

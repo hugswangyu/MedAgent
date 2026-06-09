@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from typing import Dict, List, Optional
 
@@ -12,17 +13,30 @@ from medrag.config.settings import settings
 from medrag.vectors.embedding import EmbeddingModel
 from medrag.vectors.milvus_client import MilvusClientWrapper
 
+logger = logging.getLogger(__name__)
+
 
 class QARetriever:
     def __init__(
         self,
         model_name: str = settings.embedding_model_name,
     ):
-        self.embedding_model = EmbeddingModel(model_name)
+        self.embedding_model = None
+        self.collection = None
+        self._available = False
 
-        milvus = MilvusClientWrapper()
-        milvus.connect()
-        self.collection = milvus.load_collection()
+        try:
+            self.embedding_model = EmbeddingModel(model_name)
+        except Exception as exc:
+            logger.warning("EmbeddingModel init failed: %s", exc)
+
+        try:
+            milvus = MilvusClientWrapper()
+            milvus.connect()
+            self.collection = milvus.load_collection()
+            self._available = True
+        except Exception as exc:
+            logger.warning("Milvus connection failed: %s", exc)
 
     def search(
         self,
@@ -30,8 +44,12 @@ class QARetriever:
         top_k: int | None = None,
         department: Optional[str] = None,
     ) -> List[Dict]:
+        if not self._available or self.collection is None:
+            raise RuntimeError("QARetriever unavailable (Milvus or embedding not loaded)")
         if top_k is None:
             top_k = settings.retrieval_top_k
+        if self.embedding_model is None:
+            raise RuntimeError("QARetriever unavailable (embedding model not loaded)")
         query_embedding = self.embedding_model.encode_one(query, is_query=True)
 
         search_params = {

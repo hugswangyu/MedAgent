@@ -131,6 +131,10 @@ class Settings:
         ("qwen3.5:9b", "qwen:32b", "qwen:7b", "qwen:14b", "qwen2.5:7b"),
     )
 
+    # LLM Cache
+    llm_cache_size: int = _env_int("LLM_CACHE_SIZE", 100)
+    llm_cache_ttl: int = _env_int("LLM_CACHE_TTL", 3600)
+
 
     # Storage paths (computed relative to BASE_DIR)
     sessions_path: Path = _env_path(

@@ -19,6 +19,7 @@ BGE_QUERY_PREFIX = "为这个句子生成表示以用于检索相关文章："
 class EmbeddingModel:
     def __init__(self, model_name: str = settings.embedding_model_name):
         self.model_name = model_name
+        self._available = False
 
         if torch.cuda.is_available():
             self.device = "cuda"
@@ -27,12 +28,22 @@ class EmbeddingModel:
         else:
             self.device = "cpu"
 
-        self.model = SentenceTransformer(model_name, device=self.device)
-        self.embedding_dim = self.model.get_sentence_embedding_dimension()
-        logger.info(
-            f"Embedding model loaded: {self.model_name}, "
-            f"device={self.device}, dim={self.embedding_dim}"
-        )
+        self.model = None
+        self.embedding_dim = 0
+        try:
+            self.model = SentenceTransformer(model_name, device=self.device)
+            self.embedding_dim = self.model.get_sentence_embedding_dimension()
+            self._available = True
+            logger.info(
+                f"Embedding model loaded: {self.model_name}, "
+                f"device={self.device}, dim={self.embedding_dim}"
+            )
+        except Exception as exc:
+            logger.warning(
+                "Embedding model %s failed to load: %s. "
+                "Embedding features will be unavailable.",
+                model_name, exc,
+            )
 
     def _prepare_texts(self, texts: List[str], is_query: bool) -> List[str]:
         if is_query and "bge" in self.model_name.lower():
@@ -48,6 +59,9 @@ class EmbeddingModel:
     ) -> List[List[float]]:
         if not texts:
             return []
+        if not self._available:
+            logger.warning("Embedding model unavailable, returning empty embeddings")
+            return []
 
         prepared_texts = self._prepare_texts(texts, is_query=is_query)
         embeddings = self.model.encode(
@@ -59,6 +73,8 @@ class EmbeddingModel:
         return embeddings.tolist()
 
     def encode_one(self, text: str, is_query: bool = False) -> List[float]:
+        if not self._available:
+            return []
         embeddings = self.encode([text], is_query=is_query)
         return embeddings[0] if embeddings else []
 

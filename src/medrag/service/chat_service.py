@@ -93,6 +93,26 @@ class MedicalChatService:
                 normalizer=normalizer or QueryNormalizer(),
             )
 
+            # ---- 组件健康检查 ----
+            from medrag.infrastructure.health import report_ok, report_down
+            try:
+                if _es.client.ping():
+                    report_ok("elasticsearch")
+                else:
+                    report_down("elasticsearch", "ES ping returned False")
+            except Exception as exc:
+                report_down("elasticsearch", str(exc))
+
+            if kg_retriever is not None:
+                try:
+                    kg_retriever.neo4j.run("RETURN 1")
+                    report_ok("neo4j")
+                except Exception as exc:
+                    report_down("neo4j", str(exc))
+
+            if hasattr(_qa, '_available'):
+                report_ok("milvus") if _qa._available else report_down("milvus", "QA retriever unavailable")
+
         # ---- 生成流水线 ----
         self.reranker = reranker or get_reranker()
         self.prompt_builder = prompt_builder or PromptBuilder()
@@ -129,7 +149,7 @@ class MedicalChatService:
         """
         try:
             qa = getattr(self.hybrid_retriever, 'qa', None)
-            if qa is not None and hasattr(qa, 'embedding_model'):
+            if qa is not None and hasattr(qa, 'embedding_model') and qa.embedding_model is not None:
                 return np.array(qa.embedding_model.encode_one(query, is_query=True))
         except Exception:
             logger.debug("Query embedding unavailable for memory", exc_info=True)
