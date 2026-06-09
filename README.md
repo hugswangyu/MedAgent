@@ -52,12 +52,14 @@
 
 | 特性 | 说明 |
 |------|------|
-| **多模式路由** | LLM 语义路由 + 规则回退，4 种执行模式（Tool/Chat/RAG/ReAct） |
+| **多模式路由** | LLM 语义路由（专用 DeepSeek 客户端）+ 规则回退，4 种执行模式 |
 | **三引擎检索** | Neo4j KG（结构化）+ Milvus ANN（语义）+ ES BM25（关键词）并行检索 |
 | **RRF 融合** | Dense + Sparse 倒数排名融合，跨源分数叠加 |
 | **Cross-Encoder 精排** | RRF 结果二次排序，提升 top-k 准确率 |
 | **Schema-Driven 上下文** | 优先级插槽 + 全局 Token 预算裁剪 |
 | **分层记忆系统** | STM + LTM + Preference + GraphMemory，含自动 consolidation |
+| **PostgreSQL 持久化** | 会话 / LTM 记忆 / 用户偏好统一存储，多租户隔离 |
+| **LLM 偏好提取** | DeepSeek 异步提取用户偏好，规则提取作为同步回退 |
 | **ReAct 多步推理** | Thought/Action/Observation 循环，最大 6 步，工具注册制 |
 | **内置工具包** | 剂量计算、科室导诊、检查指标正常值查询 |
 | **分级安全防护** | 红色急诊警告 + 黄色就医提醒 + 检索质量免责声明 |
@@ -73,6 +75,7 @@
 | 分类 | 技术 |
 |------|------|
 | 框架 | FastAPI + Uvicorn |
+| 数据库 | PostgreSQL + psycopg2 连接池 |
 | 向量库 | Milvus / Zilliz Cloud |
 | 关键词检索 | Elasticsearch (BM25) |
 | 知识图谱 | Neo4j + py2neo |
@@ -89,6 +92,7 @@
 ### 环境要求
 
 - Python >= 3.10
+- PostgreSQL（必需，会话和记忆持久化）
 - Neo4j (可选，KG 检索需要)
 - Milvus / Zilliz Cloud (可选，向量检索需要)
 - Elasticsearch (可选，BM25 检索需要)
@@ -113,10 +117,27 @@ DEEPSEEK_API_KEY=sk-your-key
 ZHIPUAI_API_KEY=your-key
 QWEN_API_KEY=your-key
 
+# PostgreSQL（必需，替代 JSON 文件持久化）
+PG_HOST=localhost
+PG_PORT=5432
+PG_USER=ragqa
+PG_PASSWORD=ragqa123
+PG_DATABASE=ragqa_memory
+
 # 外部服务 URI（可选）
 NEO4J_URI=http://localhost:7474
 MILVUS_HOST=localhost
 ES_HOSTS=http://localhost:9200
+```
+
+### 初始化数据库
+
+```bash
+# 创建数据库
+createdb ragqa_memory
+
+# 建表
+psql -d ragqa_memory -f scripts/create_tables.sql
 ```
 
 ### 启动
@@ -163,9 +184,13 @@ src/medrag/
 │   ├── department_guide.py
 │   └── normal_range.py
 ├── llm/              # LLM 客户端工厂
-├── infrastructure/   # 基础（健康追踪、NER 加载）
+├── infrastructure/   # 基础服务
+│   └── storage/           # 存储后端
+│       └── postgres_client.py  # PostgreSQL 持久化（LTM/会话/偏好）
 ├── ner/              # 命名实体识别
-└── config/           # 集中化配置
+├── config/           # 集中化配置
+└── scripts/          # 数据库脚本
+    └── create_tables.sql    # 建表（LTM/会话/偏好）
 ```
 
 ---
