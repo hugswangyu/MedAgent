@@ -18,6 +18,7 @@ from medrag.retrieval import (
     QueryRouter,
     get_reranker,
 )
+from medrag.memory import MemorySystem, get_memory_system
 from medrag.data.user_case_store import UserCaseRetriever, get_combined_case_summary
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class MedicalChatService:
         safety_guard=None,          # SafetyGuard 或 None → 自动创建
         case_retriever=None,        # UserCaseRetriever 或 None → 自动创建
         normalizer=None,            # QueryNormalizer 或 None → 自动创建
+        memory_system=None,         # MemorySystem 或 None → 自动创建单例
     ):
         # ---- 共享 LLM 客户端 ----
         _llm_client = get_llm_client()
@@ -93,6 +95,9 @@ class MedicalChatService:
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.answer_generator = answer_generator or AnswerGenerator(llm_provider=_llm_provider)
         self.safety_guard = safety_guard or SafetyGuard()
+
+        # ---- 记忆系统 ----
+        self.memory = memory_system or get_memory_system()
 
     # ------------------------------------------------------------------
     # 公开 API
@@ -176,14 +181,22 @@ class MedicalChatService:
 
     def _handle_chat(self, query: str, route: dict) -> Dict:
         """Chat 模式：直接 LLM 回复，不走 RAG。"""
+        # 记忆上下文构建
+        mem_context = self.memory.build_context(query)
+        system_content = "你是一个友好的医疗助手。请以亲切、自然的语气简短回复用户的问候或闲聊。"
+        if mem_context:
+            system_content = f"{mem_context}\n\n{system_content}"
+
         messages = [
-            {
-                "role": "system",
-                "content": "你是一个友好的医疗助手。请以亲切、自然的语气简短回复用户的问候或闲聊。",
-            },
+            {"role": "system", "content": system_content},
             {"role": "user", "content": query},
         ]
         answer = self.answer_generator.generate(messages)
+
+        # 记录到记忆系统
+        self.memory.add_message("user", query)
+        self.memory.store_assistant_reply(answer)
+
         return {
             "answer": answer,
             "route": route,
@@ -210,15 +223,27 @@ class MedicalChatService:
             "type": "rag_step",
             "step": {"key": "chat", "label": "闲聊回复", "icon": "💬"},
         }
+        # 记忆上下文构建
+        mem_context = self.memory.build_context(query)
+        system_content = "你是一个友好的医疗助手。请以亲切、自然的语气简短回复用户的问候或闲聊。"
+        if mem_context:
+            system_content = f"{mem_context}\n\n{system_content}"
+
         messages = [
-            {
-                "role": "system",
-                "content": "你是一个友好的医疗助手。请以亲切、自然的语气简短回复用户的问候或闲聊。",
-            },
+            {"role": "system", "content": system_content},
             {"role": "user", "content": query},
         ]
+
+        # 记录用户消息
+        self.memory.add_message("user", query)
+
+        full_answer = ""
         for token in answer_gen.generate_stream(messages, model=model):
+            full_answer += token
             yield {"type": "content", "content": token}
+
+        # 记录助手回复
+        self.memory.store_assistant_reply(full_answer)
 
     # ------------------------------------------------------------------
     # Tool 模式
@@ -226,7 +251,14 @@ class MedicalChatService:
 
     def _handle_tool(self, query: str, tool_name: str, tool_params: dict) -> Dict:
         """Tool 模式：执行原生工具，直接返回结构化结果。"""
+        # 记录用户消息
+        self.memory.add_message("user", query)
+
         result = self._tool_registry.execute(tool_name, **tool_params)
+
+        # 记录助手回复
+        self.memory.add_message("assistant", result)
+
         return {
             "answer": result,
             "route": {"execution_mode": "tool", "tool_name": tool_name},
@@ -246,7 +278,9 @@ class MedicalChatService:
             "type": "rag_step",
             "step": {"key": "tool", "label": "工具调用", "icon": "🔧", "detail": tool_name},
         }
+        self.memory.add_message("user", query)
         result = self._tool_registry.execute(tool_name, **tool_params)
+        self.memory.add_message("assistant", result)
         yield {"type": "content", "content": result}
 
     # ------------------------------------------------------------------
@@ -255,8 +289,11 @@ class MedicalChatService:
 
     def _handle_react_stub(self, query: str, route: dict) -> Dict:
         """ReAct stub：提示尚未启用。"""
+        answer = "复杂推理模式正在开发中，请使用其他方式查询。"
+        self.memory.add_message("user", query)
+        self.memory.add_message("assistant", answer)
         return {
-            "answer": "复杂推理模式正在开发中，请使用其他方式查询。",
+            "answer": answer,
             "route": {**route, "execution_mode": "react"},
             "kg_results": [],
             "qa_results": [],
@@ -271,7 +308,10 @@ class MedicalChatService:
             "type": "rag_step",
             "step": {"key": "react", "label": "复杂推理", "icon": "🧠", "detail": "模式尚未启用"},
         }
-        yield {"type": "content", "content": "复杂推理模式正在开发中，请使用其他方式查询。"}
+        answer = "复杂推理模式正在开发中，请使用其他方式查询。"
+        self.memory.add_message("user", query)
+        self.memory.add_message("assistant", answer)
+        yield {"type": "content", "content": answer}
 
     # ------------------------------------------------------------------
     # RAG 模式（原有完整流水线）
@@ -322,15 +362,26 @@ class MedicalChatService:
             query_info=retrieval.get("query_info"),
         )
 
-        # 6. 生成
+        # 6. 记忆上下文注入
+        mem_context = self.memory.build_context(query)
+        if mem_context and messages and messages[0]["role"] == "system":
+            messages[0]["content"] = f"{mem_context}\n\n{messages[0]['content']}"
+
+        # 记录用户消息
+        self.memory.add_message("user", query)
+
+        # 7. 生成
         answer = self.answer_generator.generate(messages)
 
-        # 7. 安全提示
+        # 8. 安全提示
         answer = self.safety_guard.append_safety_notice(
             answer, risk_info,
             retrieval_quality=retrieval_quality["confidence"],
             query_type=route.get("query_type"),
         )
+
+        # 记录助手回复
+        self.memory.store_assistant_reply(answer)
 
         return {
             "answer": answer,
@@ -414,6 +465,14 @@ class MedicalChatService:
             query_info=retrieval.get("query_info"),
         )
 
+        # 记忆上下文注入
+        mem_context = self.memory.build_context(query)
+        if mem_context and messages and messages[0]["role"] == "system":
+            messages[0]["content"] = f"{mem_context}\n\n{messages[0]['content']}"
+
+        # 记录用户消息
+        self.memory.add_message("user", query)
+
         # 溯源信息
         rag_trace = {
             "tool_used": True,
@@ -455,3 +514,6 @@ class MedicalChatService:
         )
         if footer.strip():
             yield {"type": "content", "content": "\n\n" + footer}
+
+        # 记录助手回复
+        self.memory.store_assistant_reply(full_answer + ("\n\n" + footer if footer.strip() else ""))
