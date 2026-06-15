@@ -13,11 +13,12 @@ Key design:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import re
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ class LongTermMemory:
         self._next_id: int = 0
         self._store_count: int = 0
         self._consolidation_cfg: Optional[ConsolidationConfig] = None
+        self._content_hashes: Set[str] = set()    # Hash-based exact dedup (stage 1)
 
         # ── Auto-load from PostgreSQL ──
         self._load_from_pg()
@@ -146,6 +148,15 @@ class LongTermMemory:
     # Store
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _hash(content: str) -> str:
+        """SHA256 hex digest of normalized content for exact-match dedup.
+
+        Strips leading/trailing whitespace before hashing so minor formatting
+        differences don't defeat the check.
+        """
+        return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
+
     def store(self, content: str, importance: float = 0.5,
               embedding: Optional[np.ndarray] = None) -> bool:
         """Store unclassified memory. Returns True if new, False if deduped."""
@@ -158,14 +169,35 @@ class LongTermMemory:
                          slot_hint: str = "") -> bool:
         """Store with classification metadata.
 
-        Inline dedup: if an existing item is above dedup_threshold,
-        update its importance/access time/category/tags/slot_hint instead of inserting.
+        Two-stage dedup:
+          1. Hash-based exact match (O(1)) — catches byte-identical content.
+          2. Embedding cosine similarity — catches semantically near-identical content.
+
+        Stage 1 runs unconditionally; stage 2 requires an embedding and a
+        configured dedup_threshold.
 
         Mirrors AGI-saber LongTerm.StoreClassified().
         """
         tags = tags or []
 
-        # ── Inline dedup check ──
+        # ── Stage 1: Hash-based exact dedup ──
+        content_hash = self._hash(content)
+        if content_hash in self._content_hashes:
+            # Find the existing item and update its metadata
+            for existing in self._items:
+                if self._hash(existing.content) == content_hash:
+                    if importance > existing.importance:
+                        existing.importance = importance
+                    existing.last_accessed = datetime.now()
+                    if category and (not existing.category or existing.category == "general"):
+                        existing.category = category
+                    if slot_hint and not existing.slot_hint:
+                        existing.slot_hint = slot_hint
+                    if tags:
+                        existing.tags = _merge_tags(existing.tags, tags)
+                    return False
+
+        # ── Stage 2: Embedding-based semantic dedup ──
         if (self._consolidation_cfg is not None
                 and len(self._items) > 0
                 and embedding is not None
@@ -209,6 +241,7 @@ class LongTermMemory:
         self._items.append(item)
         self._next_id += 1
         self._store_count += 1
+        self._content_hashes.add(content_hash)
         self._auto_save()
         return True
 
@@ -225,6 +258,7 @@ class LongTermMemory:
         if item.last_accessed is None:
             item.last_accessed = item.created_at
         self._items.append(item)
+        self._content_hashes.add(self._hash(item.content))
         self._auto_save()
 
     # ------------------------------------------------------------------
@@ -422,6 +456,7 @@ class LongTermMemory:
         # ── Rebuild items list and vocab ──
         self._items = [item for i, item in enumerate(self._items) if i not in removed]
         self._rebuild_vocab()
+        self._content_hashes = {self._hash(item.content) for item in self._items}
 
         # ── Sync to PostgreSQL ──
         self._sync_consolidation_to_pg(result)
@@ -518,6 +553,7 @@ class LongTermMemory:
             self._items.clear()
             self._vocab_id.clear()
             self._vocab.clear()
+            self._content_hashes.clear()
             for r in rows:
                 embedding = (
                     np.array(r["embedding"], dtype=np.float64)
@@ -538,6 +574,7 @@ class LongTermMemory:
                 )
                 self._items.append(item)
                 self._build_vocab(item.content)
+                self._content_hashes.add(self._hash(item.content))
             self._next_id = (max(item.id for item in self._items) + 1) if self._items else 0
         except Exception:
             logger.debug("Failed to load LTM from PG for user %s", self._username, exc_info=True)

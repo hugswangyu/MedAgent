@@ -70,7 +70,7 @@ class MemorySystem:
         """Process a conversation message through all memory layers.
 
         1. STM: store in sliding window.
-        2. Preference: extract from user messages via rules.
+        2. Preference: LLM extraction (async, regex fallback built-in).
         3. LTM: if content is classifiable, store as long-term memory.
 
         Mirrors AGI-saber process() stm.Add + extractAndSave + extractMemoryFromReply.
@@ -79,10 +79,7 @@ class MemorySystem:
         self._msg_count += 1
 
         if role == "user":
-            # ── Rule-based preference extraction (sync, instant) ──
-            self.preferences.extract_and_save(content)
-
-            # ── LLM-based preference extraction (async, non-blocking) ──
+            # ── Preference extraction (async LLM, regex fallback when LLM unavailable) ──
             threading.Thread(
                 target=self.preferences.llm_extract,
                 args=(content,),
@@ -106,7 +103,13 @@ class MemorySystem:
         self._msg_count += 1
 
         if role == "user":
-            self.preferences.extract_and_save(content)
+            # ── Preference extraction (async LLM, regex fallback when LLM unavailable) ──
+            threading.Thread(
+                target=self.preferences.llm_extract,
+                args=(content,),
+                daemon=True,
+            ).start()
+
             cat, tags, hint = classify_memory_content(content)
             imp = get_importance(cat)
             if cat != "general" and imp > 0:
