@@ -1,12 +1,15 @@
 """医疗问答系统混合查询路由器。
 
-将用户问题路由到合适的检索源：
+将用户问题分类以决定检索策略：
   - neo4j_kg      结构化医学知识图谱（疾病、症状、药品、饮食等）
   - qa            cMedQA2 医学问答向量库
 
 支持两种模式：
   - LLM 路由（默认）：语义分类，附带规则回退。
   - 规则路由：快速关键词匹配，适用于没有 LLM 的环境。
+
+返回路由 metadata（query_type、源选择），不再硬选执行模式。
+执行模式统一由 HarnessOrchestrator 决定（始终进入 ReAct 循环）。
 """
 
 from __future__ import annotations
@@ -108,26 +111,6 @@ _CASE_CONTEXT_KEYWORDS = [
     "体检", "复查", "住院", "出院", "既往", "用药", "指标",
 ]
 
-# 执行模式（规则和 LLM 路由均使用）
-EXECUTION_MODES = ["chat", "tool", "rag", "react"]
-
-# ReAct 关键词（→ 多步推理）
-_REACT_KEYWORDS = [
-    "区别", "对比", "比较", "有什么不同",
-    "同时", "又", "先", "后", "步骤",
-    "到底", "究竟",
-    "如果...怎么办", "是不是...还是",
-    "综合分析", "全面分析",
-]
-
-# 问候/闲聊关键词（→ Chat 模式）
-_GREETING_KEYWORDS = [
-    "你好", "您好", "嗨", "hi", "hello", "hey",
-    "早上好", "下午好", "晚上好",
-    "谢谢", "感谢", "再见", "拜拜", "see you",
-]
-
-# 有效的 query_type 值（规则和 LLM 路由均使用）
 QUERY_TYPES = [
     "disease_fact",
     "symptom_consult",
@@ -142,13 +125,7 @@ QUERY_TYPES = [
 # LLM 路由提示词（保持简练以降低延迟）
 # ---------------------------------------------------------------------------
 
-_ROUTER_SYSTEM = """你是一个医疗问答路由分类器。你的任务是根据用户问题，判断执行模式和信息源。
-
-可选执行模式：
-- chat: 问候、闲聊、感谢等非医疗对话，不需要检索
-- rag: 需要检索医学知识来回答的问题（默认）
-- tool: 剂量计算/科室导诊/正常值查询等工具可处理的问题
-- react: 需要多步推理的复杂问题
+_ROUTER_SYSTEM = """你是一个医疗问答分类器。你的任务是根据用户问题，判断信息源和问题类型。
 
 可选信息源：
 - kg: Neo4j 医学知识图谱（疾病、症状、药品、饮食、科室等结构化知识）
@@ -164,15 +141,12 @@ _ROUTER_SYSTEM = """你是一个医疗问答路由分类器。你的任务是根
 - general_medical_qa: 泛医疗问题或非医疗问题
 
 规则：
-1. 问候/闲聊 → execution_mode=chat。
-2. 剂量/科室/正常值等简单查询 → execution_mode=tool。
-3. 需要多步推理的复杂问题 → execution_mode=react。
-4. 其他医疗问题 → execution_mode=rag（默认）。
-5. 若问题涉及疾病事实、症状、药物、饮食、科室，启用 kg。
-6. 绝大多数医疗问题都应启用 qa。
+1. 若问题涉及疾病事实、症状、药物、饮食、科室，启用 kg。
+2. 绝大多数医疗问题都应启用 qa。
+3. 若问题包含个人健康数据（"我"、"我的"、"病历"等），设置 needs_case_context=true。
 
 请输出以下 JSON 格式（不要加任何其他文字）：
-{{"execution_mode": "...", "kg": true/false, "qa": true/false, "query_type": "...", "needs_case_context": true/false, "answer_style": "...", "reason": "一句中文解释"}}"""
+{{"kg": true/false, "qa": true/false, "query_type": "...", "needs_case_context": true/false, "answer_style": "...", "reason": "一句中文解释"}}"""
 
 _ROUTER_USER = """用户问题: {query}
 
@@ -211,9 +185,10 @@ class QueryRouter:
     # ------------------------------------------------------------------
 
     def route(self, query: str, use_llm: bool = True) -> Dict:
-        """将 *query* 路由到检索源。
+        """将 *query* 分类并返回路由 metadata。
 
-        返回字典，键为：use_kg、use_qa、reason、query_type。
+        返回字典，键为：use_kg、use_qa、reason、query_type、answer_style、needs_case_context。
+        不再返回 execution_mode——执行模式统一由上层决定。
         """
         if use_llm and settings.deepseek_api_key:
             result = self._llm_route(query)
@@ -271,7 +246,6 @@ class QueryRouter:
                 return None
 
         canonical: Dict = {
-            "execution_mode": data.get("execution_mode", "rag"),
             "use_kg": data.get("kg", data.get("use_kg", False)),
             "use_qa": data.get("qa", data.get("use_qa", False)),
             "reason": data.get("reason", ""),
@@ -279,9 +253,6 @@ class QueryRouter:
             "needs_case_context": bool(data.get("needs_case_context", False)),
             "answer_style": data.get("answer_style", ""),
         }
-
-        if canonical["execution_mode"] not in EXECUTION_MODES:
-            canonical["execution_mode"] = "rag"
 
         if canonical["query_type"] not in QUERY_TYPES:
             logger.debug("LLM route invalid query_type: %s", canonical["query_type"])
@@ -299,25 +270,6 @@ class QueryRouter:
 
     @staticmethod
     def _rule_route(query: str) -> Dict:
-        # 问候检测 → Chat 模式
-        import re as _re
-        if _re.search("|".join(_GREETING_KEYWORDS), query, _re.IGNORECASE):
-            return {
-                "execution_mode": "chat",
-                "use_kg": False, "use_qa": False,
-                "reason": "检测到问候/闲聊关键词，进入 Chat 模式",
-                "query_type": _FALLBACK_QUERY_TYPE,
-            }
-
-        # ReAct 检测 → 多步推理模式
-        if _re.search("|".join(_REACT_KEYWORDS), query, _re.IGNORECASE):
-            return {
-                "execution_mode": "react",
-                "use_kg": True, "use_qa": True,
-                "reason": "检测到多步推理关键词，进入 ReAct 模式",
-                "query_type": _FALLBACK_QUERY_TYPE,
-            }
-
         for keywords, qtype, kg, toyhom in _ROUTES:
             if any(kw in query for kw in keywords):
                 reason = _build_reason(kg, toyhom, keywords, query)
@@ -338,8 +290,6 @@ class QueryRouter:
     @staticmethod
     def _enrich_route(route: Dict, query: str) -> None:
         """补齐下游 prompt / 病例检索需要的路由字段。"""
-        if "execution_mode" not in route:
-            route["execution_mode"] = "rag"
         qtype = route.get("query_type") or _FALLBACK_QUERY_TYPE
         if qtype not in QUERY_TYPES:
             qtype = _FALLBACK_QUERY_TYPE
