@@ -50,3 +50,40 @@ class ReActTool:
             return str(result)
         except Exception as exc:
             return f"工具执行出错：{exc}"
+
+
+def base_tool_to_react_tool(base_tool) -> ReActTool:
+    """将 ``BaseTool`` 子类适配为 ``ReActTool``。
+
+    BaseTool（剂量计算/科室导诊/正常值查询）的 ``match/execute``
+    接口与 ReAct 不同（ReAct 不需要 match，LLM 自主决定调用）。
+    此适配器提取参数 schema 和执行器供 ReAct 引擎使用。
+    """
+    from medrag.tools.dosage_calculator import DosageCalculator
+    from medrag.tools.department_guide import DepartmentGuide
+    from medrag.tools.normal_range import NormalRangeTool
+
+    params: list[ToolParam] = []
+
+    if isinstance(base_tool, DosageCalculator):
+        params = [
+            ToolParam("drug", "药品名称（中文，如阿莫西林）", "string"),
+            ToolParam("age", "患者年龄（岁，可选，传则按儿童剂量计算）", "number"),
+            ToolParam("weight", "患者体重（kg，可选）", "number"),
+        ]
+    elif isinstance(base_tool, DepartmentGuide):
+        params = [
+            ToolParam("symptom", "症状或疾病名称", "string"),
+        ]
+    elif isinstance(base_tool, NormalRangeTool):
+        params = [
+            ToolParam("test", "检查项目名称（中文），如血红蛋白", "string"),
+            ToolParam("value", "检查值（可选，传入则判断是否正常）", "string"),
+        ]
+
+    return ReActTool(
+        name=base_tool.name,
+        description=base_tool.description,
+        parameters=params,
+        executor=base_tool.execute,
+    )
