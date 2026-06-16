@@ -183,6 +183,121 @@ class MedicalChatService:
         else:  # "rag"（默认）
             return self._handle_rag(query, route, user_case_summary, username)
 
+    def chat_with_harness(
+        self,
+        query: str,
+        user_case_summary: Optional[str] = None,
+        username: Optional[str] = None,
+    ) -> Dict:
+        """Harness 版本的 chat() — 统一容错编排。
+
+        用法与 chat() 完全一致，通过 HarnessOrchestrator
+        对每个阶段进行超时 + 重试 + 中文降级提示。
+        """
+        from medrag.harness.orchestrator import HarnessOrchestrator
+
+        # 0. 工具快速路径（与 chat() 保持一致）
+        tool_name, tool_params = self._get_tool_registry().match(query)
+        if tool_name is not None:
+            return self._handle_tool(query, tool_name, tool_params)
+
+        # 1. 组装 orchestrator 回调
+        def _risk_detect(query):
+            return self.safety_guard.detect_risk(query)
+
+        def _route(query):
+            return self.hybrid_retriever.router.route(query)
+
+        def _retrieve(query, username=None):
+            return self.hybrid_retriever.retrieve(query, username=username)
+
+        def _rerank(query, results):
+            return self.reranker.rerank(query, results, top_k=settings.rerank_top_k)
+
+        def _assemble(**kw):
+            query = kw.get("query", "")
+            kg_results = kw.get("kg_results", [])
+            qa_results = kw.get("qa_results", [])
+            route = kw.get("route", {})
+            retrieval_quality = {
+                "has_kg": bool(kg_results),
+                "has_qa": bool(qa_results),
+                "confidence": "high" if (kg_results or qa_results) else "none",
+            }
+            sections = self.prompt_builder.build_sections(
+                query=query,
+                kg_results=kg_results,
+                qa_results=qa_results,
+                route=route,
+                retrieval_quality=retrieval_quality,
+            )
+
+            from medrag.memory import ContextAssembler
+            assembler = ContextAssembler(budget=getattr(settings, 'context_budget', 3000))
+            from medrag.memory.schema import (
+                PRIORITY_KG, PRIORITY_QA,
+            )
+            for name, text in sections.items():
+                priority = {"kg": PRIORITY_KG, "qa": PRIORITY_QA}.get(name, 50)
+                assembler.add(name, text, priority=priority)
+
+            context = assembler.assemble()
+            messages = self.prompt_builder.build_messages_with_context(
+                context=context,
+                query=query,
+                route=route,
+                retrieval_quality=retrieval_quality,
+            )
+            return {"messages": messages}
+
+        def _generate(messages):
+            return self.answer_generator.generate(messages)
+
+        def _safety_check(query, answer, retrieval_quality="none", query_type=""):
+            risk_info = self.safety_guard.detect_risk(query)
+            return self.safety_guard.append_safety_notice(
+                answer, risk_info,
+                retrieval_quality=retrieval_quality,
+                query_type=query_type,
+            )
+
+        orchestrator = HarnessOrchestrator(
+            risk_detector=_risk_detect,
+            router=_route,
+            retriever=_retrieve,
+            reranker=_rerank,
+            assembler=_assemble,
+            generator=_generate,
+            safety_checker=_safety_check,
+        )
+
+        # 2. 记录用户消息
+        query_emb = self._get_query_embedding(query)
+        if query_emb is not None:
+            self.memory.add_message_with_embedding("user", query, query_emb)
+        else:
+            self.memory.add_message("user", query)
+
+        # 3. 执行编排
+        result = orchestrator.run(query=query, username=username)
+
+        # 4. 记录助手回复
+        self.memory.store_assistant_reply(result.get("answer", ""))
+
+        # 5. 兼容现有返回格式
+        return {
+            "answer": result["answer"],
+            "route": result.get("route", {}),
+            "risk_info": result.get("risk_info", {}),
+            "harness_trace": result.get("trace", {}),
+            "harness_warning": result.get("harness_warning"),
+            "kg_results": [],
+            "qa_results": [],
+            "case_results": [],
+            "qa_source_details": {},
+            "query_info": None,
+        }
+
     def stream_chat(
         self,
         query: str,
