@@ -84,6 +84,7 @@ async def chat_stream(
                 loop.call_soon_threadsafe(queue.put_nowait, event)
             loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
         except Exception as exc:
+            logger.error("stream_chat failed: %s", exc, exc_info=True)
             loop.call_soon_threadsafe(queue.put_nowait, exc)
 
     loop.run_in_executor(_executor, _run)

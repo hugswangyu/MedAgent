@@ -41,7 +41,7 @@ def _run_pipeline(cases: list[dict], username: str) -> list[dict]:
     service = MedicalChatService()
     rows: list[dict] = []
     for case in cases:
-        result = service.chat(
+        result = service.chat_with_harness(
             case["question"],
             user_case_summary=case.get("case_context"),
             username=username,

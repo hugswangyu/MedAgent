@@ -72,6 +72,10 @@ class RetrieveKnowledgeTool:
             except Exception:
                 qa_results = qa_results[:self._top_k]
 
+        # 缓存检索结果供 stream_chat() trace 使用，避免重复检索
+        self._retriever._last_raw_result = retrieval
+        self._retriever._last_reranked_qa = qa_results
+
         parts: List[str] = []
 
         if kg_results:

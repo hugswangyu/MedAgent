@@ -369,24 +369,6 @@ class TestChatServiceMemoryIntegration:
         svc._tools_checked = True
         return svc
 
-    def test_chat_handler_records_memory(self, service):
-        """Chat 模式：应当将 user 和 assistant 消息存入记忆。"""
-        assert service.memory.stats["stm_count"] == 0
-        result = service._handle_chat("你好", {"execution_mode": "chat"})
-        assert result["answer"] == "这是一个模拟回答。"
-        assert service.memory.stats["stm_count"] == 2  # user + assistant
-
-    def test_chat_handler_injects_memory_context(self, service):
-        """Chat 模式：系统提示词应包含记忆上下文。"""
-        service.memory.add_message("user", "我叫张三")
-        ctx_before = len(service.memory.build_context("你好"))
-        with patch.object(service.answer_generator, "generate") as mock_gen:
-            service._handle_chat("你好", {"execution_mode": "chat"})
-            # 验证 generate 收到的系统提示词包含记忆上下文
-            call_kwargs = mock_gen.call_args[0][0]
-            system_msg = call_kwargs[0]["content"]
-            assert "【用户偏好】" in system_msg or len(ctx_before) == 0
-
     def test_tool_handler_records_memory(self, service):
         """Tool 模式：应当记录用户请求和工具结果。"""
         result = service._handle_tool(
@@ -394,73 +376,14 @@ class TestChatServiceMemoryIntegration:
         )
         assert service.memory.stats["stm_count"] == 2
 
-    def test_rag_handler_records_memory(self, service):
-        """RAG 模式：应当记录用户请求和生成的回答。"""
-        result = service._handle_rag("感冒了怎么办", {"execution_mode": "rag"})
-        assert result["answer"] == "这是一个模拟回答。"
-        assert service.memory.stats["stm_count"] >= 2
-
-    def test_rag_handler_injects_memory_context(self, service):
-        """RAG 模式：应当将记忆上下文注入用户消息（Schema-Driven Assembly）。"""
-        service.memory.add_message("user", "我对青霉素过敏")
-        with patch.object(service.answer_generator, "generate") as mock_gen:
-            service._handle_rag("感冒了怎么办", {"execution_mode": "rag"})
-            call_kwargs = mock_gen.call_args[0][0]
-            user_text = call_kwargs[1]["content"]
-            assert "青霉素" in user_text
-
-    def test_react_handler_returns_answer(self, service):
-        """ReAct 模式：engine 执行返回 answer 结构。"""
-        with patch.object(service.answer_generator, "generate") as mock_gen:
-            mock_gen.return_value = "分析结果"
-            from medrag.llm.provider import get_llm_provider
-            prov = get_llm_provider()
-            with patch.object(prov.client.chat.completions, "create") as mock_llm:
-                mock_response = type('obj', (object,), {
-                    'choices': [type('obj', (object,), {'message': type('obj', (object,), {'content': '最终答案：分析结果'})})()]
-                })
-                mock_llm.return_value = mock_response
-                result = service._handle_react("帮我分析", {"execution_mode": "react"})
-                assert "answer" in result
-                assert "react_trace" in result
-                assert service.memory.stats["stm_count"] >= 2
-
-    def test_stream_chat_records_memory(self, service):
-        """流式 Chat：流结束后应当记录记忆。"""
-        list(service._stream_chat("你好", {"execution_mode": "chat"}))
-        assert service.memory.stats["stm_count"] == 2
-
-    def test_stream_rag_records_memory(self, service):
-        """流式 RAG：流结束后应当记录记忆。"""
-        list(service._stream_rag("感冒了怎么办", {"execution_mode": "rag"}))
-        assert service.memory.stats["stm_count"] == 2
-
     def test_stream_tool_records_memory(self, service):
         """流式 Tool：应当记录记忆。"""
         list(service._stream_tool("阿莫西林用量", "dosage_calculator", {}))
         assert service.memory.stats["stm_count"] == 2
 
-    def test_stream_react_records_memory(self, service):
-        """流式 ReAct：流结束后应当记录记忆。"""
-        from medrag.llm.provider import get_llm_provider
-        prov = get_llm_provider()
-        with patch.object(prov.client.chat.completions, "create") as mock_llm:
-            mock_response = type('obj', (object,), {
-                'choices': [type('obj', (object,), {'message': type('obj', (object,), {'content': '最终答案：分析结果'})})()]
-            })
-            mock_llm.return_value = mock_response
-            list(service._stream_react("帮我分析", {"execution_mode": "react"}))
-            assert service.memory.stats["stm_count"] == 2
-
-    def test_main_chat_dispatch_integration(self, service):
-        """chat() 主入口：规则路由走 RAG 并记录记忆。"""
-        result = service.chat("感冒了怎么办")
-        assert result["answer"] == "这是一个模拟回答。"
-        assert service.memory.stats["stm_count"] >= 2
-
     def test_main_chat_dispatch_tool_path(self, service):
-        """chat() 主入口：工具匹配时走 tool 路径并记录记忆。"""
+        """chat_with_harness()：工具匹配时走 tool 路径并记录记忆。"""
         service._tool_registry.match.return_value = ("dosage_calculator", {"drug_name": "阿莫西林"})
         service._tool_registry.execute.return_value = "成人常规剂量：0.5g qid"
-        result = service.chat("阿莫西林怎么吃")
+        result = service.chat_with_harness("阿莫西林怎么吃")
         assert service.memory.stats["stm_count"] == 2

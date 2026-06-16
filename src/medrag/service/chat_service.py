@@ -15,13 +15,12 @@ from medrag.llm import get_llm_client, get_llm_provider
 from medrag.rag import PromptBuilder, AnswerGenerator, SafetyGuard
 from medrag.retrieval import (
     HybridRetriever,
-    KGRetriever,
     QueryNormalizer,
     QueryRouter,
     get_reranker,
 )
 from medrag.memory import MemorySystem, get_memory_system
-from medrag.data.user_case_store import UserCaseRetriever, get_combined_case_summary
+from medrag.data.user_case_store import UserCaseRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,7 @@ class MedicalChatService:
     用法::
 
         service = MedicalChatService()
-        result = service.chat("感冒了怎么办")
+        result = service.chat_with_harness("感冒了怎么办")
 
     所有子组件均可注入以便测试或自定义配置::
 
@@ -155,25 +154,6 @@ class MedicalChatService:
             logger.debug("Query embedding unavailable for memory", exc_info=True)
         return None
 
-    def chat(
-        self,
-        query: str,
-        user_case_summary: Optional[str] = None,
-        username: Optional[str] = None,
-    ) -> Dict:
-        """运行医疗问答（向后兼容路径）。
-
-        自动检查三个内置工具（剂量计算/科室导诊/正常值查询），
-        不命中则走完整 RAG 流水线。新功能请使用 ``chat_with_harness()``。
-        """
-        # 0. 优先检查工具匹配（快速路径，不走 Router/Retrieval）
-        tool_name, tool_params = self._get_tool_registry().match(query)
-        if tool_name is not None:
-            return self._handle_tool(query, tool_name, tool_params)
-
-        # 1. RAG 流水线（Router 不再返回 execution_mode，统一走检索-生成）
-        route = self.hybrid_retriever.router.route(query)
-        return self._handle_rag(query, route, user_case_summary, username)
 
     def chat_with_harness(
         self,
@@ -188,17 +168,35 @@ class MedicalChatService:
         """
         from medrag.harness.orchestrator import HarnessOrchestrator
 
-        # 0. 工具快速路径（与 chat() 保持一致）
+        # 0. 工具快速路径
         tool_name, tool_params = self._get_tool_registry().match(query)
         if tool_name is not None:
             return self._handle_tool(query, tool_name, tool_params)
 
-        # 1. 组装 orchestrator 回调
+        # 清除前一次查询的跟踪缓存
+        self.hybrid_retriever._last_raw_result = None
+        self.hybrid_retriever._last_reranked_qa = None
+
+        # 1. 路由（仅需一次，后续所有组件共享此结果）
+        route = self.hybrid_retriever.router.route(query)
+
+        # 将路由结果注入 retriever，使其内部不再重复调用 router.route()
+        self.hybrid_retriever._current_route = route
+
+        # 2. 记录用户消息
+        query_emb = self._get_query_embedding(query)
+        if query_emb is not None:
+            self.memory.add_message_with_embedding("user", query, query_emb)
+        else:
+            self.memory.add_message("user", query)
+
+        # 3. 所有查询统一走 ReAct 编排
         def _risk_detect(query):
             return self.safety_guard.detect_risk(query)
 
         def _route(query):
-            return self.hybrid_retriever.router.route(query)
+            # 返回已确定的路由，避免 orchestrator 内部重复调用
+            return route
 
         def _safety_check(query, answer, retrieval_quality="none", query_type=""):
             risk_info = self.safety_guard.detect_risk(query)
@@ -215,23 +213,17 @@ class MedicalChatService:
             safety_checker=_safety_check,
         )
 
-        # 2. 记录用户消息
-        query_emb = self._get_query_embedding(query)
-        if query_emb is not None:
-            self.memory.add_message_with_embedding("user", query, query_emb)
-        else:
-            self.memory.add_message("user", query)
-
-        # 3. 执行编排
         result = orchestrator.run(query=query, username=username)
 
-        # 4. 记录助手回复
+        # 5. 记录助手回复
         self.memory.store_assistant_reply(result.get("answer", ""))
 
-        # 5. 兼容现有返回格式
+        # 清除路由缓存，防止泄漏到下一次查询
+        self.hybrid_retriever._current_route = None
+
         return {
             "answer": result["answer"],
-            "route": result.get("route", {}),
+            "route": route,
             "risk_info": result.get("risk_info", {}),
             "harness_trace": result.get("trace", {}),
             "harness_warning": result.get("harness_warning"),
@@ -288,92 +280,88 @@ class MedicalChatService:
         provider: Optional[str] = None,
         model: Optional[str] = None,
     ) -> Generator[Dict, None, None]:
-        """流式医疗问答（向后兼容路径）。
+        """流式医疗问答 — 统一走 Harness + ReAct 路径。
 
-        自动检查工具匹配，不命中则走流式 RAG 流水线。
+        provider/model/department 参数保留以兼容外部调用方，由默认配置控制。
         """
-        # 0. 优先检查工具匹配
+        # 0. 优先检查工具匹配（快速路径）
         tool_name, tool_params = self._get_tool_registry().match(query)
         if tool_name is not None:
             yield from self._stream_tool(query, tool_name, tool_params)
             return
 
-        # 1. RAG 流式流水线（Router 不再返回 execution_mode）
-        route = self.hybrid_retriever.router.route(query)
-        yield from self._stream_rag(
-            query, route, user_case_summary, username,
-            department, provider, model,
-        )
-
-    # ------------------------------------------------------------------
-    # Chat 模式
-    # ------------------------------------------------------------------
-
-    def _handle_chat(self, query: str, route: dict) -> Dict:
-        """Chat 模式：直接 LLM 回复，不走 RAG。"""
-        # 记忆上下文构建
-        mem_context = self.memory.build_context(query)
-        system_content = "你是一个友好的医疗助手。请以亲切、自然的语气简短回复用户的问候或闲聊。"
-        if mem_context:
-            system_content = f"{mem_context}\n\n{system_content}"
-
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": query},
-        ]
-        answer = self.answer_generator.generate(messages)
-
-        # 记录到记忆系统
-        self.memory.add_message("user", query)
-        self.memory.store_assistant_reply(answer)
-
-        return {
-            "answer": answer,
-            "route": route,
-            "kg_results": [],
-            "qa_results": [],
-            "case_results": [],
-            "qa_source_details": {},
-            "risk_info": {"has_risk": False, "risk_keywords": []},
-            "query_info": None,
-        }
-
-    def _stream_chat(
-        self, query: str, route: dict,
-        provider: Optional[str] = None, model: Optional[str] = None,
-    ) -> Generator[Dict, None, None]:
-        """流式 Chat 模式。"""
-        if provider and provider != settings.llm_provider:
-            _gen_provider = get_llm_provider(provider)
-            answer_gen = AnswerGenerator(llm_provider=_gen_provider)
-        else:
-            answer_gen = self.answer_generator
-
+        # 1. 进度事件
         yield {
             "type": "rag_step",
-            "step": {"key": "chat", "label": "闲聊回复", "icon": "💬"},
+            "step": {"key": "risk", "label": "安全检测", "icon": "🛡️", "detail": "扫描风险关键词"},
         }
-        # 记忆上下文构建
-        mem_context = self.memory.build_context(query)
-        system_content = "你是一个友好的医疗助手。请以亲切、自然的语气简短回复用户的问候或闲聊。"
-        if mem_context:
-            system_content = f"{mem_context}\n\n{system_content}"
+        yield {
+            "type": "rag_step",
+            "step": {"key": "retrieve", "label": "多源检索", "icon": "🔍", "detail": "知识图谱 + 向量库"},
+        }
 
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": query},
-        ]
+        # 2. 执行 Harness 编排
+        result = self.chat_with_harness(
+            query, user_case_summary=user_case_summary, username=username,
+        )
 
-        # 记录用户消息
-        self.memory.add_message("user", query)
+        # 3. 溯源信息（前端展示来源和相关度）
+        # 从 ReAct/Fast 路径的缓存中读取，避免重复检索
+        raw = getattr(self.hybrid_retriever, '_last_raw_result', None)
+        reranked = getattr(self.hybrid_retriever, '_last_reranked_qa', None)
+        if raw is not None and reranked is not None:
+            try:
+                kg_results = raw.get("kg_results", [])
+                qa_results = reranked
+                chunks = []
+                logger.debug(
+                    "TRACE kg_results=%d qa_results=%d",
+                    len(kg_results), len(qa_results),
+                )
+                for i, r in enumerate((kg_results + qa_results)[:10]):
+                    score = r.get("rrf_score") or r.get("score") or 0
+                    rerank = r.get("ce_score") or r.get("final_score") or score
+                    logger.debug(
+                        "TRACE chunk[%d] source=%s score=%s rerank=%s",
+                        i, r.get("source"), score, rerank,
+                    )
+                    chunks.append({
+                        "filename": r.get("source", r.get("id", "")),
+                        "text": (r.get("answer") or r.get("text") or "")[:200],
+                        "rrf_rank": i + 1,
+                        "rrf_score": score,
+                        "rerank_score": rerank,
+                        "source_rank": r.get("rrf_source_rank", 0),
+                    })
+                yield {"type": "trace", "rag_trace": {
+                    "tool_used": True,
+                    "tool_name": "multi-source-retrieval",
+                    "retrieval_stage": "initial",
+                    "initial_retrieved_chunks": chunks,
+                }}
+            except Exception:
+                logger.debug("Trace assembly failed", exc_info=True)
 
-        full_answer = ""
-        for token in answer_gen.generate_stream(messages, model=model):
-            full_answer += token
-            yield {"type": "content", "content": token}
+        # 4. 产出推理轨迹
+        react_trace = result.get("react_trace") or {}
+        if react_trace.get("steps"):
+            yield {
+                "type": "rag_step",
+                "step": {"key": "react", "label": "ReAct 推理", "icon": "🧠", "detail": "多步推理"},
+            }
+            for step in react_trace["steps"]:
+                yield {
+                    "type": "rag_step",
+                    "step": {
+                        "key": f"react_step_{step['step']}",
+                        "label": f"步骤 {step['step']}",
+                        "icon": "🔍",
+                        "detail": f"{step['action']}: {step.get('thought', '')[:80]}",
+                    },
+                }
 
-        # 记录助手回复
-        self.memory.store_assistant_reply(full_answer)
+        # 5. 产出回答
+        yield {"type": "content", "content": result.get("answer", "")}
 
     # ------------------------------------------------------------------
     # Tool 模式
@@ -413,400 +401,4 @@ class MedicalChatService:
         self.memory.add_message("assistant", result)
         yield {"type": "content", "content": result}
 
-    # ------------------------------------------------------------------
-    # ReAct 多步推理
-    # ------------------------------------------------------------------
 
-    def _handle_react(self, query: str, route: dict) -> Dict:
-        """ReAct 模式：多步推理循环（Thought/Action/Observation）。"""
-        risk_info = self.safety_guard.detect_risk(query)
-
-        provider = get_llm_provider()
-        from medrag.react import ReActEngine
-
-        engine = ReActEngine(provider.client, model=provider.default_model)
-
-        # ── 注册检索工具 ──
-        kg = getattr(self.hybrid_retriever, 'kg', None)
-        if kg is not None:
-            engine.register_tool(
-                "retrieve_kg", "查询医学知识图谱，获取疾病、症状、药物间的结构化关系",
-                executor=kg.search,
-                parameters=[{"name": "query", "description": "搜索关键词", "type": "string"}],
-            )
-        engine.register_tool(
-            "retrieve_qa", "检索医疗问答库和知识图谱，查找类似病例和医学知识",
-            executor=self._react_qa_search,
-            parameters=[{"name": "query", "description": "搜索关键词", "type": "string"}],
-        )
-
-        # ── 注册计算工具 ──
-        from medrag.tools.dosage_calculator import DosageCalculator
-        _dosage = DosageCalculator()
-        engine.register_tool(
-            "calculate_dosage", "计算常见药物剂量，支持成人和儿童剂量换算",
-            executor=lambda **kw: _dosage.execute(**kw),
-            parameters=[
-                {"name": "drug_name", "description": "药物名称（中文）", "type": "string"},
-                {"name": "age", "description": "患者年龄（岁）", "type": "number"},
-                {"name": "weight", "description": "患者体重（kg，可选）", "type": "number"},
-            ],
-        )
-        from medrag.tools.normal_range import NormalRangeTool
-        _normal = NormalRangeTool()
-        engine.register_tool(
-            "query_normal_range", "查询医学检查项目的正常值参考范围，可判断检查值是否正常",
-            executor=lambda **kw: _normal.execute(**kw),
-            parameters=[
-                {"name": "test_name", "description": "检查项目名称（中文）", "type": "string"},
-                {"name": "value", "description": "检查值（可选，传入则判断是否正常）", "type": "string"},
-            ],
-        )
-
-        # ── 记忆上下文 ──
-        query_emb = self._get_query_embedding(query)
-        mem_context = self.memory.build_context(query, query_embedding=query_emb)
-
-        # ── 执行 ReAct 循环 ──
-        result = engine.run(query, system_context=mem_context)
-
-        # ── 记录记忆 ──
-        if query_emb is not None:
-            self.memory.add_message_with_embedding("user", query, query_emb)
-        else:
-            self.memory.add_message("user", query)
-        self.memory.store_assistant_reply(result["answer"])
-
-        return {
-            "answer": result["answer"],
-            "route": {**route, "execution_mode": "react"},
-            "kg_results": [],
-            "qa_results": [],
-            "case_results": [],
-            "qa_source_details": {},
-            "risk_info": risk_info,
-            "query_info": None,
-            "react_trace": {
-                "steps": result.get("steps", []),
-                "tool_results": result.get("tool_results", {}),
-            },
-        }
-
-    def _react_qa_search(self, query: str) -> str:
-        """ReAct QA/知识库检索辅助。"""
-        try:
-            retrieval = self.hybrid_retriever.retrieve(query)
-            kg = retrieval.get("kg_results", [])
-            qa = retrieval.get("qa_results", [])
-            parts = []
-            if kg:
-                parts.append("【知识图谱结果】")
-                for r in kg[:3]:
-                    parts.append(f"- {r.get('answer', '')[:400]}")
-            if qa:
-                parts.append("【相似问答结果】")
-                for r in qa[:3]:
-                    ans = r.get('answer') or r.get('text', '')
-                    parts.append(f"- {ans[:400]}")
-            return "\n".join(parts) if parts else "未找到相关信息"
-        except Exception as exc:
-            logger.warning("ReAct QA search failed: %s", exc)
-            return f"检索出错：{exc}"
-
-    def _stream_react(self, query: str, route: dict) -> Generator[Dict, None, None]:
-        """流式 ReAct 模式：逐步产出推理步骤，最后流式输出答案。"""
-        yield {
-            "type": "rag_step",
-            "step": {"key": "react", "label": "ReAct 推理", "icon": "🧠", "detail": "多步推理"},
-        }
-        result = self._handle_react(query, route)
-
-        # 产出推理轨迹
-        for step in result.get("react_trace", {}).get("steps", []):
-            yield {
-                "type": "rag_step",
-                "step": {
-                    "key": f"react_step_{step['step']}",
-                    "label": f"步骤 {step['step']}",
-                    "icon": "🔍",
-                    "detail": f"{step['action']}: {step['thought'][:80]}",
-                },
-            }
-
-        yield {"type": "content", "content": result["answer"]}
-
-    # ------------------------------------------------------------------
-    # RAG 模式（原有完整流水线）
-    # ------------------------------------------------------------------
-
-    def _handle_rag(
-        self,
-        query: str,
-        route: dict,
-        user_case_summary: Optional[str] = None,
-        username: Optional[str] = None,
-    ) -> Dict:
-        """RAG 模式：完整的检索-重排序-生成流水线。"""
-        # 1. 风险检测
-        risk_info = self.safety_guard.detect_risk(query)
-
-        # 2. 多源检索
-        retrieval = self.hybrid_retriever.retrieve(query, username=username)
-        retrieval["route"] = route  # 保留外部 execution_mode
-
-        # 3. 重排序
-        retrieval["qa_results"] = self.reranker.rerank(
-            query, retrieval["qa_results"], top_k=settings.rerank_top_k,
-        )
-
-        # 4. 检索质量
-        retrieval_quality = {
-            "has_kg": bool(retrieval["kg_results"]),
-            "has_qa": bool(retrieval["qa_results"]),
-            "has_case": bool(retrieval.get("case_results")),
-            "confidence": (
-                "high" if (retrieval["kg_results"] or retrieval["qa_results"] or retrieval.get("case_results"))
-                else "none"
-            ),
-        }
-
-        # 5. 获取 query embedding（用于 LTM 语义召回增强）
-        query_emb = self._get_query_embedding(query)
-
-        # 6. Schema-Driven Context Assembly（优先级 + Token 预算）
-        from medrag.memory import ContextAssembler
-        from medrag.memory.schema import (
-            PRIORITY_MEMORY, PRIORITY_CASE_SUMMARY, PRIORITY_KG,
-            PRIORITY_QA, PRIORITY_CASE_CHUNKS,
-        )
-
-        assembler = ContextAssembler(budget=settings.context_budget)
-
-        # 6a. 记忆上下文（最高优先级）
-        if retrieval_quality.get("confidence") != "none":
-            mem_context = self.memory.build_context(query, query_embedding=query_emb)
-            assembler.add("memory", mem_context, priority=PRIORITY_MEMORY)
-
-        # 6b. 检索结果 sections
-        if user_case_summary is None and username:
-            user_case_summary = get_combined_case_summary(username)
-        sections = self.prompt_builder.build_sections(
-            query=query,
-            kg_results=retrieval["kg_results"],
-            qa_results=retrieval["qa_results"],
-            case_results=retrieval.get("case_results", []),
-            case_context=user_case_summary,
-            route=route,
-            retrieval_quality=retrieval_quality,
-            query_info=retrieval.get("query_info"),
-        )
-
-        # Map section name → priority (higher = kept first under budget)
-        section_priorities = {
-            "case_summary": PRIORITY_CASE_SUMMARY,
-            "case_chunks": PRIORITY_CASE_CHUNKS,
-            "kg": PRIORITY_KG,
-            "qa": PRIORITY_QA,
-            "query": 50,
-        }
-        for name, text in sections.items():
-            assembler.add(name, text, priority=section_priorities.get(name, 50))
-
-        # 6c. Assemble with budget pruning
-        context = assembler.assemble()
-        messages = self.prompt_builder.build_messages_with_context(
-            context=context,
-            query=query,
-            route=route,
-            retrieval_quality=retrieval_quality,
-            query_info=retrieval.get("query_info"),
-        )
-
-        # 记录用户消息（带 embedding，提升 LTM 内联去重和召回质量）
-        if query_emb is not None:
-            self.memory.add_message_with_embedding("user", query, query_emb)
-        else:
-            self.memory.add_message("user", query)
-
-        # 7. 生成
-        answer = self.answer_generator.generate(messages)
-
-        # 8. 安全提示
-        answer = self.safety_guard.append_safety_notice(
-            answer, risk_info,
-            retrieval_quality=retrieval_quality["confidence"],
-            query_type=route.get("query_type"),
-        )
-
-        # 记录助手回复
-        self.memory.store_assistant_reply(answer)
-
-        return {
-            "answer": answer,
-            "route": route,
-            "kg_results": retrieval["kg_results"],
-            "qa_results": retrieval["qa_results"],
-            "case_results": retrieval.get("case_results", []),
-            "qa_source_details": retrieval.get("qa_source_details", {}),
-            "risk_info": risk_info,
-            "query_info": retrieval.get("query_info"),
-        }
-
-    def _stream_rag(
-        self,
-        query: str,
-        route: dict,
-        user_case_summary: Optional[str] = None,
-        username: Optional[str] = None,
-        department: Optional[str] = None,
-        provider: Optional[str] = None,
-        model: Optional[str] = None,
-    ) -> Generator[Dict, None, None]:
-        """流式 RAG 模式。"""
-        # 动态创建 AnswerGenerator
-        if provider and provider != settings.llm_provider:
-            _gen_provider = get_llm_provider(provider)
-            answer_gen = AnswerGenerator(llm_provider=_gen_provider)
-        else:
-            answer_gen = self.answer_generator
-
-        # 1. 风险检测
-        yield {
-            "type": "rag_step",
-            "step": {"key": "risk", "label": "安全检测", "icon": "🛡️", "detail": "扫描风险关键词"},
-        }
-        risk_info = self.safety_guard.detect_risk(query)
-
-        # 2. 多源检索
-        yield {
-            "type": "rag_step",
-            "step": {"key": "retrieve", "label": "多源检索", "icon": "🔍", "detail": "知识图谱 + 向量库"},
-        }
-        retrieval = self.hybrid_retriever.retrieve(query, department=department, username=username)
-        retrieval["route"] = route
-
-        # 3. 重排序
-        yield {
-            "type": "rag_step",
-            "step": {"key": "rerank", "label": "QA结果重排序", "icon": "📊", "detail": f"共 {len(retrieval['qa_results'])} 条候选"},
-        }
-        retrieval["qa_results"] = self.reranker.rerank(
-            query, retrieval["qa_results"], top_k=settings.rerank_top_k,
-        )
-
-        # 4. 检索质量
-        retrieval_quality = {
-            "has_kg": bool(retrieval["kg_results"]),
-            "has_qa": bool(retrieval["qa_results"]),
-            "has_case": bool(retrieval.get("case_results")),
-            "confidence": (
-                "high" if (retrieval["kg_results"] or retrieval["qa_results"] or retrieval.get("case_results"))
-                else "none"
-            ),
-        }
-
-        # 5. 提示词（Schema-Driven Context Assembly）
-        yield {
-            "type": "rag_step",
-            "step": {"key": "prompt", "label": "构建提示词", "icon": "📝"},
-        }
-        if user_case_summary is None and username:
-            user_case_summary = get_combined_case_summary(username)
-
-        # 获取 query embedding（用于 LTM 语义召回增强）
-        query_emb = self._get_query_embedding(query)
-
-        # Schema-Driven Context Assembly
-        from medrag.memory import ContextAssembler
-        from medrag.memory.schema import (
-            PRIORITY_MEMORY, PRIORITY_CASE_SUMMARY, PRIORITY_KG,
-            PRIORITY_QA, PRIORITY_CASE_CHUNKS,
-        )
-
-        assembler = ContextAssembler(budget=settings.context_budget)
-
-        # 记忆上下文（最高优先级）
-        if retrieval_quality.get("confidence") != "none":
-            mem_context = self.memory.build_context(query, query_embedding=query_emb)
-            assembler.add("memory", mem_context, priority=PRIORITY_MEMORY)
-
-        # 检索结果 sections
-        sections = self.prompt_builder.build_sections(
-            query=query,
-            kg_results=retrieval["kg_results"],
-            qa_results=retrieval["qa_results"],
-            case_results=retrieval.get("case_results", []),
-            case_context=user_case_summary,
-            route=route,
-            retrieval_quality=retrieval_quality,
-            query_info=retrieval.get("query_info"),
-        )
-        section_priorities = {
-            "case_summary": PRIORITY_CASE_SUMMARY,
-            "case_chunks": PRIORITY_CASE_CHUNKS,
-            "kg": PRIORITY_KG,
-            "qa": PRIORITY_QA,
-            "query": 50,
-        }
-        for name, text in sections.items():
-            assembler.add(name, text, priority=section_priorities.get(name, 50))
-
-        context = assembler.assemble()
-        messages = self.prompt_builder.build_messages_with_context(
-            context=context,
-            query=query,
-            route=route,
-            retrieval_quality=retrieval_quality,
-            query_info=retrieval.get("query_info"),
-        )
-
-        # 记录用户消息（带 embedding，提升 LTM 内联去重和召回质量）
-        if query_emb is not None:
-            self.memory.add_message_with_embedding("user", query, query_emb)
-        else:
-            self.memory.add_message("user", query)
-
-        # 溯源信息
-        rag_trace = {
-            "tool_used": True,
-            "tool_name": "multi-source-retrieval",
-            "retrieval_stage": "initial",
-            "retrieval_mode": route.get("query_type", ""),
-            "query_info": retrieval.get("query_info"),
-            "initial_retrieved_chunks": [
-                {
-                    "filename": r.get("source", r.get("id", "")),
-                    "text": (r.get("answer") or r.get("text") or r.get("evidence", ""))[:200],
-                    "rrf_rank": i + 1,
-                    "rrf_score": r.get("rrf_score", 0),
-                    "rerank_score": r.get("ce_score") or r.get("final_score", 0),
-                    "source_rank": r.get("rrf_source_rank", 0),
-                }
-                for i, r in enumerate(
-                    (retrieval["kg_results"] + retrieval["qa_results"])[:10]
-                )
-            ],
-        }
-        yield {"type": "trace", "rag_trace": rag_trace}
-
-        # 6. 流式生成
-        yield {
-            "type": "rag_step",
-            "step": {"key": "generate", "label": "生成回答", "icon": "✨"},
-        }
-        full_answer = ""
-        for token in answer_gen.generate_stream(messages, model=model):
-            full_answer += token
-            yield {"type": "content", "content": token}
-
-        # 7. 安全提示尾注
-        footer = self.safety_guard.append_safety_notice(
-            "", risk_info,
-            retrieval_quality=retrieval_quality["confidence"],
-            query_type=route.get("query_type"),
-        )
-        if footer.strip():
-            yield {"type": "content", "content": "\n\n" + footer}
-
-        # 记录助手回复
-        self.memory.store_assistant_reply(full_answer + ("\n\n" + footer if footer.strip() else ""))
