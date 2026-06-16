@@ -9,6 +9,7 @@ from .types import (
     MedStateMachine,
     MedPhase,
 )
+from .orchestrator import HarnessOrchestrator
 
 __all__ = [
     "MedToolResult",
@@ -18,4 +19,5 @@ __all__ = [
     "HarnessConfig",
     "MedStateMachine",
     "MedPhase",
+    "HarnessOrchestrator",
 ]
