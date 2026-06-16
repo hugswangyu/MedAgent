@@ -115,10 +115,7 @@ class TestMedStateMachine:
         assert sm.current_phase == MedPhase.RISK_DETECT
 
         sm.transition(MedPhase.ROUTE)
-        sm.transition(MedPhase.RETRIEVE)
-        sm.transition(MedPhase.RERANK)
-        sm.transition(MedPhase.ASSEMBLE)
-        sm.transition(MedPhase.GENERATE)
+        sm.transition(MedPhase.REACT_LOOP)
         sm.transition(MedPhase.SAFETY_CHECK)
         sm.transition(MedPhase.COMPLETE)
         assert sm.current_phase == MedPhase.COMPLETE
@@ -126,11 +123,11 @@ class TestMedStateMachine:
     def test_cannot_skip_risk_detect(self):
         sm = MedStateMachine(session_id="test-2")
         with pytest.raises(ValueError, match="RISK_DETECT"):
-            sm.transition(MedPhase.GENERATE)
+            sm.transition(MedPhase.REACT_LOOP)
 
     def test_safety_check_mandatory_before_complete(self):
         sm = MedStateMachine(session_id="test-3")
-        sm.force_transition(MedPhase.GENERATE)
+        sm.force_transition(MedPhase.REACT_LOOP)
         with pytest.raises(ValueError, match="SAFETY_CHECK"):
             sm.transition(MedPhase.COMPLETE)
 
@@ -143,9 +140,9 @@ class TestMedStateMachine:
 
     def test_retry_recorded(self):
         sm = MedStateMachine(session_id="test-5")
-        sm.transition(MedPhase.RETRIEVE)
-        sm.record_retry("kg_search", attempt=1, reason="timeout")
-        assert sm.retry_history[0]["tool"] == "kg_search"
+        sm.transition(MedPhase.RISK_DETECT)
+        sm.record_retry("retrieval", attempt=1, reason="timeout")
+        assert sm.retry_history[0]["tool"] == "retrieval"
         assert sm.retry_history[0]["reason"] == "timeout"
 
     def test_to_dict_contains_medical_state(self):

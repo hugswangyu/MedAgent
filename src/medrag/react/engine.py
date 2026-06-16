@@ -90,11 +90,13 @@ class ReActEngine:
         model: str = "",
         max_steps: int = 6,
         temperature: float = 0.1,
+        request_timeout: float = 30.0,
     ):
         self.llm = llm_client
         self.model = model
         self.max_steps = max_steps
         self.temperature = temperature
+        self.request_timeout = request_timeout
         self._tools: Dict[str, ReActTool] = {}
 
     # ------------------------------------------------------------------
@@ -164,11 +166,12 @@ class ReActEngine:
             # ── 解析工具调用 ──
             action = self._parse_action(response_text)
             if action is None:
-                # LLM 输出格式不对，引导重试
+                # LLM 输出格式不对，分析原因并引导重试
+                error_reason = self._analyze_parse_error(response_text)
                 messages.append({"role": "assistant", "content": response_text})
                 messages.append({
                     "role": "system",
-                    "content": self._format_retry_guidance(step_idx),
+                    "content": self._format_retry_guidance(step_idx, error_reason),
                 })
                 continue
 
@@ -182,7 +185,14 @@ class ReActEngine:
             else:
                 observation = tool.call(**tool_input)
                 if len(observation) > _MAX_OBSERVATION_CHARS:
-                    observation = observation[:_MAX_OBSERVATION_CHARS] + "…"
+                    keep_front = 500
+                    keep_back = 200
+                    truncated = len(observation) - keep_front - keep_back
+                    observation = (
+                        observation[:keep_front]
+                        + f"\n…[截断 {truncated} 字]…\n"
+                        + observation[-keep_back:]
+                    )
 
             # 记录步骤
             step_record = {
@@ -204,9 +214,14 @@ class ReActEngine:
 
         # ── 达到最大步数，强制结束 ──
         logger.info("ReAct reached max steps (%d), forcing final answer", self.max_steps)
+        steps_summary = self._build_steps_summary(steps)
         messages.append({
             "role": "system",
-            "content": "你已经达到最大推理步数，请立即给出最终答案。",
+            "content": (
+                f"你已经达到最大推理步数（{self.max_steps}），"
+                "请基于以下已获取的信息直接给出最终答案。\n\n"
+                f"已完成的推理步骤摘要：\n{steps_summary}"
+            ),
         })
         forced = self._call_llm(messages)
         answer = self._parse_final_answer(forced) or forced
@@ -242,6 +257,7 @@ class ReActEngine:
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=2048,
+                timeout=self.request_timeout,
             )
             return response.choices[0].message.content or ""
         except Exception as exc:
@@ -289,10 +305,25 @@ class ReActEngine:
         return None
 
     @staticmethod
-    def _format_retry_guidance(step_idx: int) -> str:
+    def _analyze_parse_error(text: str) -> str:
+        """分析 LLM 输出格式错误的具体原因。"""
+        if not text.strip():
+            return "输出为空"
+        if _FINAL_ANSWER_RE.search(text):
+            return "检测到最终答案但格式不清晰，请重新组织"
+        if "行动" in text or "Action" in text:
+            if "输入" in text or "Input" in text:
+                return "工具调用格式正确但 JSON 参数解析失败，请检查 JSON 格式"
+            return "工具调用缺少「输入」字段"
+        return "未检测到标准格式（思考/行动/输入 或 思考/最终答案）"
+
+    @staticmethod
+    def _format_retry_guidance(step_idx: int, error_reason: str = "") -> str:
         """格式错误时的重试引导。"""
+        reason = f"错误原因：{error_reason}\n\n" if error_reason else ""
         return (
-            f"第 {step_idx} 步输出格式有误。请严格按以下格式之一输出：\n\n"
+            f"第 {step_idx} 步输出格式有误。{reason}"
+            "请严格按以下格式之一输出：\n\n"
             "选择工具时：\n"
             "思考：<当前推理>\n"
             "行动：<工具名>\n"
@@ -315,6 +346,20 @@ class ReActEngine:
             "steps": steps,
             "tool_results": tool_results,
         }
+
+    @staticmethod
+    def _build_steps_summary(steps: List[Dict]) -> str:
+        """构建步骤摘要（用于最大步数强制结束时的提示）。"""
+        if not steps:
+            return "（尚未执行任何步骤）"
+        lines = []
+        for s in steps:
+            obs = s.get("observation", "")
+            obs_preview = obs[:100] + "…" if len(obs) > 100 else obs
+            lines.append(
+                f"  步骤 {s['step']}: 调用 {s['action']}({s['input']}) → {obs_preview}"
+            )
+        return "\n".join(lines)
 
 
 # 适配 ReActTool 参数类型

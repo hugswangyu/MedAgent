@@ -219,22 +219,19 @@ class HarnessConfig:
 
 
 class MedPhase(str, enum.Enum):
-    """医疗问答的执行阶段。
+    """医疗问答的执行阶段（ReAct 统一架构）。
 
-    反映 MedAgent 的真实流程：
-      risk_detect(安全检测) → route(路由) → retrieve(多源检索)
-      → rerank(重排序) → assemble(组装上下文) → generate(LLM生成)
-      → safety_check(二次安全检测) → complete(完成)
+    所有查询统一进入 ReAct 循环，LLM 自主决定调工具还是直接回答。
+      risk_detect(输入安全检测) → route(仅元数据，不选模式)
+      → react_loop(ReAct 推理循环) → safety_check(输出安全检测) → complete
 
-    这是医疗场景专有的阶段定义，非通用 Agent 阶段。
+    RETRIEVE/RERANK/ASSEMBLE/GENERATE 已由 REACT_LOOP 统一承载，
+    RAG 检索作为 retrieve_knowledge 工具在循环内调用。
     """
     IDLE = "idle"
     RISK_DETECT = "risk_detect"    # 输入安全检测（检测紧急/风险关键词）
-    ROUTE = "route"                 # 路由决策（chat/rag/react/tool）
-    RETRIEVE = "retrieve"           # 多源检索（KG / QA / ES / Case）
-    RERANK = "rerank"               # Cross-Encoder 重排序
-    ASSEMBLE = "assemble"           # Schema-Driven Context Assembly
-    GENERATE = "generate"           # LLM 生成回答
+    ROUTE = "route"                 # 路由元数据（query_type、数据源选择，不选执行模式）
+    REACT_LOOP = "react_loop"       # ReAct 推理循环（LLM 自主决策调工具或回答）
     SAFETY_CHECK = "safety_check"   # 输出安全检测（追加免责声明）
     COMPLETE = "complete"
     FAILED = "failed"
@@ -242,10 +239,10 @@ class MedPhase(str, enum.Enum):
 
 @dataclass
 class MedStateMachine:
-    """医疗问答流程状态机。
+    """医疗问答流程状态机（ReAct 统一架构）。
 
     强制流程约束：
-      1. RISK_DETECT 必须在 GENERATE 之前至少执行一次
+      1. REACT_LOOP 必须在 RISK_DETECT 之后执行（输入安全检测前置）
       2. SAFETY_CHECK 是 COMPLETE 的前置条件（医疗场景必须检查输出安全）
       3. 可以通过 ``force_transition`` 跳过中间阶段（用于恢复/测试）
     """
@@ -263,9 +260,9 @@ class MedStateMachine:
         """阶段转换，强制执行医疗场景的约束。"""
         now = time.time()
 
-        if target == MedPhase.GENERATE and not self._risk_detected:
+        if target == MedPhase.REACT_LOOP and not self._risk_detected:
             raise ValueError(
-                "RISK_DETECT must be completed before GENERATE (medical safety requirement)"
+                "RISK_DETECT must be completed before REACT_LOOP (medical safety requirement)"
             )
 
         if target == MedPhase.COMPLETE and not self._safety_checked:

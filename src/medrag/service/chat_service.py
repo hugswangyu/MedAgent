@@ -161,27 +161,19 @@ class MedicalChatService:
         user_case_summary: Optional[str] = None,
         username: Optional[str] = None,
     ) -> Dict:
-        """运行多模式医疗问答。
+        """运行医疗问答（向后兼容路径）。
 
         自动检查三个内置工具（剂量计算/科室导诊/正常值查询），
-        不命中则按 Router 分发的执行模式处理。
+        不命中则走完整 RAG 流水线。新功能请使用 ``chat_with_harness()``。
         """
         # 0. 优先检查工具匹配（快速路径，不走 Router/Retrieval）
         tool_name, tool_params = self._get_tool_registry().match(query)
         if tool_name is not None:
             return self._handle_tool(query, tool_name, tool_params)
 
-        # 1. 路由 — 获取 execution_mode
+        # 1. RAG 流水线（Router 不再返回 execution_mode，统一走检索-生成）
         route = self.hybrid_retriever.router.route(query)
-        mode = route.get("execution_mode", "rag")
-
-        # 2. 按模式分发
-        if mode == "chat":
-            return self._handle_chat(query, route)
-        elif mode == "react":
-            return self._handle_react(query, route)
-        else:  # "rag"（默认）
-            return self._handle_rag(query, route, user_case_summary, username)
+        return self._handle_rag(query, route, user_case_summary, username)
 
     def chat_with_harness(
         self,
@@ -189,10 +181,10 @@ class MedicalChatService:
         user_case_summary: Optional[str] = None,
         username: Optional[str] = None,
     ) -> Dict:
-        """Harness 版本的 chat() — 统一容错编排。
+        """Harness 版本的 chat() — 统一 ReAct 编排。
 
-        用法与 chat() 完全一致，通过 HarnessOrchestrator
-        对每个阶段进行超时 + 重试 + 中文降级提示。
+        用法与 chat() 完全一致，所有查询统一走 ReAct 循环，
+        RAG 检索作为 ``retrieve_knowledge`` 工具在循环内由 LLM 自主调用。
         """
         from medrag.harness.orchestrator import HarnessOrchestrator
 
@@ -208,51 +200,6 @@ class MedicalChatService:
         def _route(query):
             return self.hybrid_retriever.router.route(query)
 
-        def _retrieve(query, username=None):
-            return self.hybrid_retriever.retrieve(query, username=username)
-
-        def _rerank(query, results):
-            return self.reranker.rerank(query, results, top_k=settings.rerank_top_k)
-
-        def _assemble(**kw):
-            query = kw.get("query", "")
-            kg_results = kw.get("kg_results", [])
-            qa_results = kw.get("qa_results", [])
-            route = kw.get("route", {})
-            retrieval_quality = {
-                "has_kg": bool(kg_results),
-                "has_qa": bool(qa_results),
-                "confidence": "high" if (kg_results or qa_results) else "none",
-            }
-            sections = self.prompt_builder.build_sections(
-                query=query,
-                kg_results=kg_results,
-                qa_results=qa_results,
-                route=route,
-                retrieval_quality=retrieval_quality,
-            )
-
-            from medrag.memory import ContextAssembler
-            assembler = ContextAssembler(budget=getattr(settings, 'context_budget', 3000))
-            from medrag.memory.schema import (
-                PRIORITY_KG, PRIORITY_QA,
-            )
-            for name, text in sections.items():
-                priority = {"kg": PRIORITY_KG, "qa": PRIORITY_QA}.get(name, 50)
-                assembler.add(name, text, priority=priority)
-
-            context = assembler.assemble()
-            messages = self.prompt_builder.build_messages_with_context(
-                context=context,
-                query=query,
-                route=route,
-                retrieval_quality=retrieval_quality,
-            )
-            return {"messages": messages}
-
-        def _generate(messages):
-            return self.answer_generator.generate(messages)
-
         def _safety_check(query, answer, retrieval_quality="none", query_type=""):
             risk_info = self.safety_guard.detect_risk(query)
             return self.safety_guard.append_safety_notice(
@@ -264,10 +211,7 @@ class MedicalChatService:
         orchestrator = HarnessOrchestrator(
             risk_detector=_risk_detect,
             router=_route,
-            retriever=_retrieve,
-            reranker=_rerank,
-            assembler=_assemble,
-            generator=_generate,
+            react_engine_builder=self._build_react_engine,
             safety_checker=_safety_check,
         )
 
@@ -291,12 +235,49 @@ class MedicalChatService:
             "risk_info": result.get("risk_info", {}),
             "harness_trace": result.get("trace", {}),
             "harness_warning": result.get("harness_warning"),
+            "react_trace": result.get("react_trace"),
             "kg_results": [],
             "qa_results": [],
             "case_results": [],
             "qa_source_details": {},
             "query_info": None,
         }
+
+    def _build_react_engine(self, query: str, route: dict):
+        """构建注入到 ReAct 循环的引擎，注册所有可用工具。"""
+        provider = get_llm_provider()
+        from medrag.react import ReActEngine
+        from medrag.react.rag_tool import RetrieveKnowledgeTool
+        from medrag.react.tools import base_tool_to_react_tool
+        from medrag.tools.dosage_calculator import DosageCalculator
+        from medrag.tools.department_guide import DepartmentGuide
+        from medrag.tools.normal_range import NormalRangeTool
+
+        engine = ReActEngine(
+            provider.client,
+            model=provider.default_model,
+            request_timeout=60.0,  # ReAct 多步，给 LLM 更长时间
+        )
+
+        # ── 注册 RAG 检索工具 ──
+        knowledge_tool = RetrieveKnowledgeTool(
+            self.hybrid_retriever,
+            self.reranker,
+            prompt_builder=self.prompt_builder,
+        )
+        engine.register_tool(
+            knowledge_tool.name,
+            knowledge_tool.description,
+            executor=knowledge_tool.execute,
+            parameters=knowledge_tool.parameters,
+        )
+
+        # ── 注册原生工具 ──
+        for tool in [DosageCalculator(), DepartmentGuide(), NormalRangeTool()]:
+            rt = base_tool_to_react_tool(tool)
+            engine.register_tool_from_def(rt)
+
+        return engine
 
     def stream_chat(
         self,
@@ -307,9 +288,9 @@ class MedicalChatService:
         provider: Optional[str] = None,
         model: Optional[str] = None,
     ) -> Generator[Dict, None, None]:
-        """多模式流式问答。
+        """流式医疗问答（向后兼容路径）。
 
-        模式自适应：工具 → Chat → RAG → ReAct(stub)，自动选择。
+        自动检查工具匹配，不命中则走流式 RAG 流水线。
         """
         # 0. 优先检查工具匹配
         tool_name, tool_params = self._get_tool_registry().match(query)
@@ -317,20 +298,12 @@ class MedicalChatService:
             yield from self._stream_tool(query, tool_name, tool_params)
             return
 
-        # 1. 路由
+        # 1. RAG 流式流水线（Router 不再返回 execution_mode）
         route = self.hybrid_retriever.router.route(query)
-        mode = route.get("execution_mode", "rag")
-
-        # 2. 分发
-        if mode == "chat":
-            yield from self._stream_chat(query, route, provider, model)
-        elif mode == "react":
-            yield from self._stream_react(query, route)
-        else:
-            yield from self._stream_rag(
-                query, route, user_case_summary, username,
-                department, provider, model,
-            )
+        yield from self._stream_rag(
+            query, route, user_case_summary, username,
+            department, provider, model,
+        )
 
     # ------------------------------------------------------------------
     # Chat 模式
