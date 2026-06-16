@@ -6,7 +6,7 @@
   3. ES BM25              — 关键词 / 医学实体召回（cMedQA2 语料库）
 
 cMedQA2 语料库采用双路检索 + RRF 融合 + Cross-Encoder 精选：
-  Milvus (dense) + ES (sparse) → RRF (c=20) → Cross-Encoder → top-k
+  Milvus (dense) + ES (sparse) → RRF (c=60) → Cross-Encoder → top-k
 """
 
 from __future__ import annotations
@@ -119,6 +119,7 @@ class HybridRetriever:
         top_k: int = 10,
         department: str | None = None,
         username: str | None = None,
+        route: dict | None = None,
     ) -> Dict:
         """路由 *query* 并从合适的源获取结果。
 
@@ -134,7 +135,11 @@ class HybridRetriever:
             query_info = self.normalizer.normalize(query).to_dict()
             retrieval_query = query_info["normalized_query"]
 
-        route = self.router.route(retrieval_query)
+        # 优先使用调用方已确定的路由，避免重复路由
+        if route is None:
+            route = getattr(self, '_current_route', None)
+        if route is None:
+            route = self.router.route(retrieval_query)
 
         use_kg = route["use_kg"]
         use_qa = route["use_qa"]

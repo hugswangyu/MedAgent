@@ -242,7 +242,7 @@ src/medrag/
   │     │     ├─ retrieve_knowledge (RAG):
   │     │     │     HybridRetriever (KG + QA + ES)
   │     │     │     → RRF 融合 → Cross-Encoder 精排
-  │     │     │     → ContextAssembler → LLM 生成
+  │     │     │     → 格式化文本返回 ReAct 循环作为 Observation
   │     │     │
   │     │     ├─ dosage_calculator: 药物剂量计算
   │     │     ├─ department_guide: 科室导诊
