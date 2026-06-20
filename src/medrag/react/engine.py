@@ -51,7 +51,8 @@ _REACT_SYSTEM_PROMPT = """你是一个医疗智能助手，需要通过多步推
 5. 如果不确定，明确告知用户信息有限。
 6. 不得给出超出工具结果范围的诊断结论。
 7. 【强制】回答任何医疗相关问题前，必须先调用 retrieve_knowledge 工具检索知识库，不得直接依赖模型自身训练知识作答。
-8. 【强制】最终答案必须严格基于工具返回的 Observation 内容，不得在检索结果之外补充任何自身训练知识。若检索结果不足以回答问题，应明确告知用户"知识库中未找到相关信息，建议咨询医生"，而非自行填充答案。"""
+8. 【强制】最终答案必须严格基于工具返回的 Observation 内容，不得在检索结果之外补充任何自身训练知识。若检索结果不足以回答问题，应明确告知用户"知识库中未找到相关信息，建议咨询医生"，而非自行填充答案。
+9. 【强制】若工具返回"未找到相关信息"，立即给出最终答案告知用户，不得用相同或相似的 query 重复调用同一工具。"""
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +150,7 @@ class ReActEngine:
         messages = self._build_initial_messages(query, system_context)
         steps: List[Dict] = []
         tool_results: Dict[str, Any] = {}
+        seen_actions: set = set()  # 重复调用检测
 
         for step_idx in range(1, self.max_steps + 1):
             logger.debug("ReAct step %d/%d", step_idx, self.max_steps)
@@ -160,10 +162,7 @@ class ReActEngine:
             # ── 检查是否为最终答案 ──
             final = self._parse_final_answer(response_text)
             if final:
-                answer = self._build_final_answer(
-                    query, final, steps, tool_results,
-                )
-                return answer
+                return self._build_final_answer(query, final, steps, tool_results)
 
             # ── 解析工具调用 ──
             action = self._parse_action(response_text)
@@ -176,6 +175,13 @@ class ReActEngine:
                     "content": self._format_retry_guidance(step_idx, error_reason),
                 })
                 continue
+
+            # ── 重复调用检测：同一个 (工具, 参数) 再次出现说明陷入死循环 ──
+            action_key = (action["name"], json.dumps(action["input"], sort_keys=True, ensure_ascii=False))
+            if action_key in seen_actions:
+                logger.warning("ReAct loop detected at step %d: repeated action %s", step_idx, action_key)
+                break
+            seen_actions.add(action_key)
 
             # ── 执行工具 ──
             tool_name = action["name"]
@@ -214,19 +220,27 @@ class ReActEngine:
                 "content": f"Observation: {observation}",
             })
 
-        # ── 达到最大步数，强制结束 ──
-        logger.info("ReAct reached max steps (%d), forcing final answer", self.max_steps)
+        # ── 达到最大步数或检测到死循环，强制结束 ──
+        logger.info("ReAct forcing final answer after %d steps", len(steps))
         steps_summary = self._build_steps_summary(steps)
         messages.append({
             "role": "system",
             "content": (
-                f"你已经达到最大推理步数（{self.max_steps}），"
-                "请基于以下已获取的信息直接给出最终答案。\n\n"
+                "请基于以下已获取的信息，直接以「思考：…\n最终答案：…」格式给出最终回答，"
+                "不要再调用任何工具。\n\n"
                 f"已完成的推理步骤摘要：\n{steps_summary}"
             ),
         })
         forced = self._call_llm(messages)
-        answer = self._parse_final_answer(forced) or forced
+        answer = self._parse_final_answer(forced)
+        if not answer:
+            # LLM 仍未输出标准格式，从已有 observations 提炼答案
+            logger.warning("ReAct forced answer parse failed, falling back to observations")
+            obs_texts = [s["observation"] for s in steps if s.get("observation")]
+            if obs_texts:
+                answer = "根据已检索到的信息：\n\n" + "\n\n".join(obs_texts[:3])
+            else:
+                answer = "抱歉，未能检索到足够信息，建议咨询医生。"
         return self._build_final_answer(query, answer, steps, tool_results)
 
     # ------------------------------------------------------------------
