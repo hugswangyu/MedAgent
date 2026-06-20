@@ -218,6 +218,10 @@ class MedicalChatService:
         # 5. 记录助手回复
         self.memory.store_assistant_reply(result.get("answer", ""))
 
+        # 读取 RetrieveKnowledgeTool 缓存的检索结果（供 eval/trace 使用）
+        _raw = getattr(self.hybrid_retriever, "_last_raw_result", None) or {}
+        _reranked_qa = getattr(self.hybrid_retriever, "_last_reranked_qa", None) or []
+
         # 清除路由缓存，防止泄漏到下一次查询
         self.hybrid_retriever._current_route = None
 
@@ -228,9 +232,9 @@ class MedicalChatService:
             "harness_trace": result.get("trace", {}),
             "harness_warning": result.get("harness_warning"),
             "react_trace": result.get("react_trace"),
-            "kg_results": [],
-            "qa_results": [],
-            "case_results": [],
+            "kg_results": _raw.get("kg_results", []),
+            "qa_results": _reranked_qa,
+            "case_results": _raw.get("case_results", []),
             "qa_source_details": {},
             "query_info": None,
         }

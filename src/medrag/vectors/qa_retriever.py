@@ -7,8 +7,6 @@ import logging
 import sys
 from typing import Dict, List, Optional
 
-from pymilvus import Collection
-
 from medrag.config.settings import settings
 from medrag.vectors.embedding import EmbeddingModel
 from medrag.vectors.milvus_client import MilvusClientWrapper
@@ -22,7 +20,7 @@ class QARetriever:
         model_name: str = settings.embedding_model_name,
     ):
         self.embedding_model = None
-        self.collection = None
+        self._milvus: MilvusClientWrapper | None = None
         self._available = False
 
         try:
@@ -33,7 +31,8 @@ class QARetriever:
         try:
             milvus = MilvusClientWrapper()
             milvus.connect()
-            self.collection = milvus.load_collection()
+            milvus.load_collection()
+            self._milvus = milvus
             self._available = True
         except Exception as exc:
             logger.warning("Milvus connection failed: %s", exc)
@@ -44,54 +43,34 @@ class QARetriever:
         top_k: int | None = None,
         department: Optional[str] = None,
     ) -> List[Dict]:
-        if not self._available or self.collection is None:
+        if not self._available or self._milvus is None:
             raise RuntimeError("QARetriever unavailable (Milvus or embedding not loaded)")
         if top_k is None:
             top_k = settings.retrieval_top_k
         if self.embedding_model is None:
             raise RuntimeError("QARetriever unavailable (embedding model not loaded)")
+
         query_embedding = self.embedding_model.encode_one(query, is_query=True)
+        expr = f'department == "{department}"' if department else None
 
-        search_params = {
-            "metric_type": "COSINE",
-            "params": {"nprobe": 64},
-        }
+        hits = self._milvus.search(query_embedding, top_k, expr=expr)
 
-        expr: Optional[str] = None
-        if department:
-            expr = f'department == "{department}"'
-
-        results = self.collection.search(
-            data=[query_embedding],
-            anns_field="embedding",
-            param=search_params,
-            limit=top_k,
-            expr=expr,
-            output_fields=[
-                "pk",
-                "department",
-                "title",
-                "question",
-                "answer",
-                "text",
-            ],
-        )
-
-        hits: List[Dict] = []
-        for hit in results[0]:
-            hits.append(
+        results: List[Dict] = []
+        for hit in hits:
+            entity = hit.get("entity", {})
+            results.append(
                 {
                     "source": "cmedqa2",
-                    "id": hit.entity.get("pk"),
-                    "score": float(hit.distance),
-                    "department": hit.entity.get("department") or "",
-                    "title": hit.entity.get("title") or "",
-                    "question": hit.entity.get("question") or "",
-                    "answer": hit.entity.get("answer") or "",
-                    "text": hit.entity.get("text") or "",
+                    "id": entity.get("pk") or hit.get("id", ""),
+                    "score": float(hit.get("distance", 0)),
+                    "department": entity.get("department") or "",
+                    "title": entity.get("title") or "",
+                    "question": entity.get("question") or "",
+                    "answer": entity.get("answer") or "",
+                    "text": entity.get("text") or "",
                 }
             )
-        return hits
+        return results
 
 
 def _parse_args() -> argparse.Namespace:

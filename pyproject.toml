@@ -8,7 +8,7 @@ version = "2.0.0"
 description = "Medical AI Agent — 记忆、路由、ReAct 推理、优雅降级"
 requires-python = ">=3.10"
 dependencies = [
-    "elasticsearch>=9.4.1",
+    "elasticsearch>=8.0,<9",
     "fastapi>=0.137.1",
     "httpx>=0.28.1",
     "ollama>=0.6.2",
@@ -21,6 +21,32 @@ dependencies = [
     "sse-starlette>=3.4.4",
     "uvicorn>=0.49.0",
     "zhipuai>=2.1.5.20250825",
+    # 运行时补全
+    "pyahocorasick>=2.0",
+    "bcrypt>=4.0",
+    "python-jose[cryptography]>=3.3",
+    "psycopg2-binary>=2.9",
+    "seqeval>=1.2",
+    "scikit-learn>=1.4",
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+    "langchain-huggingface>=1.2.2",
+]
+
+[project.optional-dependencies]
+eval = [
+    "ragas>=0.4,<0.5",
+    "datasets>=2.18",
+    "langchain-community>=0.3,<0.4",
+    "langchain-anthropic>=1.4",
+    "langchain-huggingface>=0.1",
+]
+finetune = [
+    "peft>=0.10",
+    "jieba>=0.42",
+    "nltk>=3.8",
+    "rouge-chinese>=1.0",
+    "ruamel.yaml>=0.18",
 ]
 
 [tool.setuptools.packages.find]

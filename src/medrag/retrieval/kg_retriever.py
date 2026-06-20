@@ -103,15 +103,20 @@ class KGRetriever:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _create_neo4j_client() -> py2neo.Graph:
+    def _create_neo4j_client():
         if py2neo is None:
-            raise RuntimeError("py2neo is required for KGRetriever")
-        return py2neo.Graph(
-            settings.neo4j_uri,
-            user=settings.neo4j_user,
-            password=settings.neo4j_password,
-            name=settings.neo4j_database,
-        )
+            logger.warning("py2neo not available, KGRetriever will return empty results")
+            return None
+        try:
+            return py2neo.Graph(
+                settings.neo4j_uri,
+                user=settings.neo4j_user,
+                password=settings.neo4j_password,
+                name=settings.neo4j_database,
+            )
+        except Exception as exc:
+            logger.warning("Neo4j unavailable (%s), KGRetriever will return empty results", exc)
+            return None
 
     def _get_entities(self, query: str) -> Dict[str, str]:
         """NER 流水线: {entity_type: canonical_name}。"""
@@ -258,19 +263,23 @@ class KGRetriever:
                 value = self._query_attribute(entity, rel_attr)
                 if value:
                     evidence = value
-                    answer_parts.append(value)
+                    answer_parts.append(f"{entity} [{rel_attr}]: {value}")
 
             elif qtype == "relation":
                 names = self._query_relation(entity, rel_attr, target)  # type: ignore[arg-type]
                 if names:
                     evidence = names
-                    answer_parts.append("、".join(names))
+                    answer_parts.append(
+                        f"{entity} [{rel_attr}] → {'、'.join(names)}"
+                    )
 
             elif qtype == "reverse_relation":
                 names = self._query_reverse_relation(entity, rel_attr, target)  # type: ignore[arg-type]
                 if names:
                     evidence = names
-                    answer_parts.append("、".join(names))
+                    answer_parts.append(
+                        f"{'、'.join(names)} [{rel_attr}] → {entity}"
+                    )
 
             if evidence is not None:
                 results.append(

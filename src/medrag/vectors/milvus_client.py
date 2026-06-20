@@ -3,27 +3,16 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 try:
-    from pymilvus import (
-        Collection,
-        CollectionSchema,
-        DataType,
-        FieldSchema,
-        connections,
-        utility,
-    )
+    from pymilvus import MilvusClient, DataType
     from pymilvus.exceptions import MilvusException
 except Exception:  # pragma: no cover - optional runtime dependency
-    Collection = None  # type: ignore[assignment]
-    CollectionSchema = None  # type: ignore[assignment]
+    MilvusClient = None  # type: ignore[assignment,misc]
     DataType = None  # type: ignore[assignment]
-    FieldSchema = None  # type: ignore[assignment]
-    connections = None  # type: ignore[assignment]
-    utility = None  # type: ignore[assignment]
 
-    class MilvusException(Exception):
+    class MilvusException(Exception):  # type: ignore[no-redef]
         pass
 
 
@@ -50,68 +39,82 @@ class MilvusClientWrapper:
         uri: str = settings.milvus_uri,
         token: str = settings.milvus_token,
         collection_name: str = settings.milvus_collection,
-        alias: str = "default",
+        alias: str = "default",  # kept for API compatibility, unused
     ):
         self.host = host
         self.port = str(port)
         self.uri = uri
         self.token = token
         self.collection_name = collection_name
-        self.alias = alias
-        self.collection: Collection | None = None
+        self._client: MilvusClient | None = None
+
+    # ------------------------------------------------------------------
+    # 连接
+    # ------------------------------------------------------------------
 
     def connect(self) -> None:
         if self.uri:
-            connections.connect(
-                alias=self.alias,
-                uri=self.uri,
-                token=self.token,
-            )
-            logger.info(f"Milvus connected: {self.uri}")
+            self._client = MilvusClient(uri=self.uri, token=self.token)
+            logger.info("Milvus connected: %s", self.uri)
         else:
-            connections.connect(alias=self.alias, host=self.host, port=self.port)
-            logger.info(f"Milvus connected: {self.host}:{self.port}")
+            self._client = MilvusClient(host=self.host, port=int(self.port))
+            logger.info("Milvus connected: %s:%s", self.host, self.port)
 
-    def create_collection(self, embedding_dim: int, recreate: bool = False) -> Collection:
-        if recreate and utility.has_collection(self.collection_name, using=self.alias):
-            utility.drop_collection(self.collection_name, using=self.alias)
-            logger.info(f"Dropped Milvus collection: {self.collection_name}")
+    @property
+    def client(self) -> MilvusClient:
+        if self._client is None:
+            self.connect()
+        return self._client
 
-        if utility.has_collection(self.collection_name, using=self.alias):
-            self.collection = Collection(self.collection_name, using=self.alias)
-            logger.info(f"Using existing Milvus collection: {self.collection_name}")
-            return self.collection
+    # ------------------------------------------------------------------
+    # Collection 管理
+    # ------------------------------------------------------------------
 
-        fields = [
-            FieldSchema(
-                name="pk",
-                dtype=DataType.VARCHAR,
-                is_primary=True,
-                max_length=VARCHAR_LIMITS["pk"],
-            ),
-            FieldSchema(name="department", dtype=DataType.VARCHAR, max_length=VARCHAR_LIMITS["department"]),
-            FieldSchema(name="title", dtype=DataType.VARCHAR, max_length=VARCHAR_LIMITS["title"]),
-            FieldSchema(name="question", dtype=DataType.VARCHAR, max_length=VARCHAR_LIMITS["question"]),
-            FieldSchema(name="answer", dtype=DataType.VARCHAR, max_length=VARCHAR_LIMITS["answer"]),
-            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=VARCHAR_LIMITS["text"]),
-            FieldSchema(name="source", dtype=DataType.VARCHAR, max_length=VARCHAR_LIMITS["source"]),
-            FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=embedding_dim),
-        ]
-        schema = CollectionSchema(fields=fields, description="Medical QA vector collection (cMedQA2)")
-        self.collection = Collection(
-            name=self.collection_name,
-            schema=schema,
-            using=self.alias,
-            shards_num=2,
+    def create_collection(self, embedding_dim: int, recreate: bool = False) -> "MilvusClientWrapper":
+        if recreate and self.client.has_collection(self.collection_name):
+            self.client.drop_collection(self.collection_name)
+            logger.info("Dropped Milvus collection: %s", self.collection_name)
+
+        if self.client.has_collection(self.collection_name):
+            logger.info("Using existing Milvus collection: %s", self.collection_name)
+            return self
+
+        schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field("pk",         DataType.VARCHAR,      is_primary=True, max_length=VARCHAR_LIMITS["pk"])
+        schema.add_field("department", DataType.VARCHAR,      max_length=VARCHAR_LIMITS["department"])
+        schema.add_field("title",      DataType.VARCHAR,      max_length=VARCHAR_LIMITS["title"])
+        schema.add_field("question",   DataType.VARCHAR,      max_length=VARCHAR_LIMITS["question"])
+        schema.add_field("answer",     DataType.VARCHAR,      max_length=VARCHAR_LIMITS["answer"])
+        schema.add_field("text",       DataType.VARCHAR,      max_length=VARCHAR_LIMITS["text"])
+        schema.add_field("source",     DataType.VARCHAR,      max_length=VARCHAR_LIMITS["source"])
+        schema.add_field("embedding",  DataType.FLOAT_VECTOR, dim=embedding_dim)
+
+        index_params = self.client.prepare_index_params()
+        index_params.add_index(
+            field_name="embedding",
+            index_type="IVF_FLAT",
+            metric_type="COSINE",
+            params={"nlist": 2048},
         )
 
-        logger.info(f"Created Milvus collection: {self.collection_name}, dim={embedding_dim}")
-        return self.collection
+        self.client.create_collection(
+            collection_name=self.collection_name,
+            schema=schema,
+            index_params=index_params,
+        )
+        logger.info("Created Milvus collection: %s, dim=%d", self.collection_name, embedding_dim)
+        return self
+
+    def load_collection(self) -> "MilvusClientWrapper":
+        self.client.load_collection(self.collection_name)
+        logger.info("Milvus collection loaded: %s", self.collection_name)
+        return self
+
+    # ------------------------------------------------------------------
+    # 写入
+    # ------------------------------------------------------------------
 
     def insert_batch(self, docs: List[Dict], embeddings: List[List[float]]) -> bool:
-        if self.collection is None:
-            self.collection = Collection(self.collection_name, using=self.alias)
-
         if len(docs) != len(embeddings):
             raise ValueError("docs and embeddings must have the same length")
         if not docs:
@@ -124,78 +127,95 @@ class MilvusClientWrapper:
                 raise ValueError("each doc must include either 'id' or 'pk'")
             rows.append(
                 {
-                    "pk": self._clip(str(pk), "pk"),
+                    "pk":         self._clip(str(pk), "pk"),
                     "department": self._clip(doc.get("department", ""), "department"),
-                    "title": self._clip(doc.get("title", ""), "title"),
-                    "question": self._clip(doc.get("question", ""), "question"),
-                    "answer": self._clip(doc.get("answer", ""), "answer"),
-                    "text": self._clip(doc.get("text", ""), "text"),
-                    "source": self._clip(doc.get("source", "cmedqa2"), "source"),
-                    "embedding": embedding,
+                    "title":      self._clip(doc.get("title", ""), "title"),
+                    "question":   self._clip(doc.get("question", ""), "question"),
+                    "answer":     self._clip(doc.get("answer", ""), "answer"),
+                    "text":       self._clip(doc.get("text", ""), "text"),
+                    "source":     self._clip(doc.get("source", "cmedqa2"), "source"),
+                    "embedding":  embedding,
                 }
             )
 
         try:
-            self.collection.insert(rows)
+            self.client.insert(collection_name=self.collection_name, data=rows)
             return True
         except MilvusException as exc:
-            # 逐条插入以仅跳过有问题的记录
             if "exceeds max length" in str(exc).lower() or "length of varchar" in str(exc).lower():
                 return self._insert_one_by_one(rows)
-
-            if hasattr(self.collection, "upsert"):
-                try:
-                    self.collection.upsert(rows)
-                    logger.warning(f"Duplicate primary keys were upserted")
-                    return True
-                except MilvusException as upsert_exc:
-                    if "exceeds max length" in str(upsert_exc).lower() or "length of varchar" in str(upsert_exc).lower():
-                        return self._insert_one_by_one(rows)
-                    logger.warning(f"Skip batch after Milvus upsert failed: {upsert_exc}")
-                    return False
-
-            logger.warning(f"Skip batch after Milvus insert failed: {exc}")
-            return False
+            try:
+                self.client.upsert(collection_name=self.collection_name, data=rows)
+                logger.warning("Duplicate primary keys were upserted")
+                return True
+            except MilvusException as upsert_exc:
+                if "exceeds max length" in str(upsert_exc).lower() or "length of varchar" in str(upsert_exc).lower():
+                    return self._insert_one_by_one(rows)
+                logger.warning("Skip batch after Milvus upsert failed: %s", upsert_exc)
+                return False
 
     def _insert_one_by_one(self, rows: List[Dict]) -> bool:
         ok = 0
         for row in rows:
             try:
-                self.collection.insert([row])
+                self.client.insert(collection_name=self.collection_name, data=[row])
                 ok += 1
             except MilvusException:
                 try:
-                    self.collection.upsert([row])
+                    self.client.upsert(collection_name=self.collection_name, data=[row])
                     ok += 1
                 except MilvusException:
                     pass
         return ok > 0
 
     def flush(self) -> None:
-        if self.collection is None:
-            self.collection = Collection(self.collection_name, using=self.alias)
-        self.collection.flush()
-        logger.info(f"Milvus collection flushed: {self.collection_name}")
+        self.client.flush(collection_name=self.collection_name)
+        logger.info("Milvus collection flushed: %s", self.collection_name)
+
+    # ------------------------------------------------------------------
+    # 索引
+    # ------------------------------------------------------------------
 
     def create_index(self) -> None:
-        if self.collection is None:
-            self.collection = Collection(self.collection_name, using=self.alias)
-        self.collection.create_index(
+        index_params = self.client.prepare_index_params()
+        index_params.add_index(
             field_name="embedding",
-            index_params={
-                "index_type": "IVF_FLAT",
-                "metric_type": "COSINE",
-                "params": {"nlist": 2048},
-            },
+            index_type="IVF_FLAT",
+            metric_type="COSINE",
+            params={"nlist": 2048},
         )
-        logger.info(f"IVF_FLAT index created on: {self.collection_name}")
+        self.client.create_index(
+            collection_name=self.collection_name,
+            index_params=index_params,
+        )
+        logger.info("IVF_FLAT index created on: %s", self.collection_name)
 
-    def load_collection(self) -> Collection:
-        if self.collection is None:
-            self.collection = Collection(self.collection_name, using=self.alias)
-        self.collection.load()
-        logger.info(f"Milvus collection loaded: {self.collection_name}")
-        return self.collection
+    # ------------------------------------------------------------------
+    # 检索
+    # ------------------------------------------------------------------
+
+    def search(
+        self,
+        query_embedding: List[float],
+        top_k: int,
+        expr: Optional[str] = None,
+        output_fields: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """向量检索，返回 hit 列表（每个 hit 含 id/distance/entity）。"""
+        results = self.client.search(
+            collection_name=self.collection_name,
+            data=[query_embedding],
+            anns_field="embedding",
+            search_params={"metric_type": "COSINE", "params": {"nprobe": 64}},
+            limit=top_k,
+            filter=expr or "",
+            output_fields=output_fields or ["pk", "department", "title", "question", "answer", "text"],
+        )
+        return results[0] if results else []
+
+    # ------------------------------------------------------------------
+    # 工具
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _clip(value: object, field_name: str) -> str:
