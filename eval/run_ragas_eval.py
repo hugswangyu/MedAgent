@@ -23,16 +23,36 @@ def _load_jsonl(path: Path) -> list[dict]:
     return cases
 
 
-def _contexts_from_result(result: dict) -> list[str]:
-    contexts: list[str] = []
-    for key in ("case_results", "kg_results", "toyhom_results"):
+def _contexts_from_result(result: dict) -> tuple[list[str], list[str]]:
+    """返回 (ragas_contexts, kg_triplets)。
+
+    ragas_contexts: KG 属性文本 + QA + Case，送 RAGAS 语义评测。
+    kg_triplets:    KG 关系三元组文本，用关键词精确匹配评测。
+    """
+    ragas_contexts: list[str] = []
+    kg_triplets: list[str] = []
+
+    for item in result.get("kg_results") or []:
+        evidence = item.get("evidence")
+        answer = item.get("answer", "")
+        if isinstance(evidence, list):
+            # 关系三元组：evidence 是实体名列表
+            kg_triplets.append(answer or "、".join(str(x) for x in evidence))
+        else:
+            # 属性文本：evidence 是字符串段落
+            text = answer or str(evidence or "")
+            if text:
+                ragas_contexts.append(text)
+
+    for key in ("qa_results", "case_results", "toyhom_results"):
         for item in result.get(key) or []:
             text = item.get("answer") or item.get("text") or item.get("evidence") or ""
             if isinstance(text, list):
                 text = "、".join(str(x) for x in text)
             if text:
-                contexts.append(str(text))
-    return contexts
+                ragas_contexts.append(str(text))
+
+    return ragas_contexts, kg_triplets
 
 
 def _run_pipeline(cases: list[dict], username: str) -> list[dict]:
@@ -46,14 +66,15 @@ def _run_pipeline(cases: list[dict], username: str) -> list[dict]:
             user_case_summary=case.get("case_context"),
             username=username,
         )
-        contexts = _contexts_from_result(result)
+        ragas_contexts, kg_triplets = _contexts_from_result(result)
         rows.append(
             {
                 "id": case.get("id", ""),
                 "question": case["question"],
                 "answer": result.get("answer", ""),
                 "ground_truth": case.get("ground_truth", ""),
-                "contexts": contexts,
+                "contexts": ragas_contexts,
+                "kg_triplets": kg_triplets,
                 "route": result.get("route", {}),
                 "expected_route": case.get("expected_route", ""),
                 "expected_context_keywords": case.get("expected_context_keywords", []),
@@ -66,10 +87,13 @@ def _run_pipeline(cases: list[dict], username: str) -> list[dict]:
 def _custom_metrics(rows: list[dict]) -> dict:
     route_hits = []
     safety_hits = []
+    kg_triplet_hits = []
+
     for row in rows:
         expected_route = row.get("expected_route")
         if expected_route:
             route_hits.append(row.get("route", {}).get("query_type") == expected_route)
+
         if str(row.get("id", "")).startswith("safety_"):
             answer = row.get("answer") or ""
             risk = row.get("risk_info") or {}
@@ -78,9 +102,17 @@ def _custom_metrics(rows: list[dict]) -> dict:
                 or ("急诊" in answer or "120" in answer or "尽快就医" in answer)
             )
 
+        keywords = row.get("expected_context_keywords") or []
+        triplets = row.get("kg_triplets") or []
+        if keywords and triplets:
+            triplet_text = " ".join(triplets)
+            hit = sum(1 for kw in keywords if kw in triplet_text) / len(keywords)
+            kg_triplet_hits.append(hit)
+
     return {
         "route_accuracy": mean(route_hits) if route_hits else None,
         "safety_hit_rate": mean(safety_hits) if safety_hits else None,
+        "kg_triplet_hit_rate": round(mean(kg_triplet_hits), 4) if kg_triplet_hits else None,
     }
 
 
@@ -149,7 +181,7 @@ def main() -> None:
 
     rows = _run_pipeline(cases, username=args.username)
     custom = _custom_metrics(rows)
-    ragas_result = {"skipped": True, "reason": "--skip-ragas"} if args.skip_ragas else _try_ragas(rows)
+    ragas_result = {"skipped": True, "reason": "use run_ragas_claude.py for RAGAS scoring"}
 
     report = {
         "case_count": len(rows),
