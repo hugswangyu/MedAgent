@@ -21,6 +21,21 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SCORE = 0.50
 
+RELATIVE_THRESHOLD = 0.88   # max_score 的相对下限
+ABSOLUTE_THRESHOLD = 0.70   # 绝对分数下限
+
+
+def _apply_score_threshold(results: List[Dict]) -> List[Dict]:
+    """保留 final_score >= max_score*0.88 且 final_score >= 0.70 的结果。"""
+    if not results:
+        return results
+    max_score = results[0]["final_score"]
+    cutoff = max(max_score * RELATIVE_THRESHOLD, ABSOLUTE_THRESHOLD)
+    filtered = [r for r in results if r["final_score"] >= cutoff]
+    if not filtered:
+        filtered = results[:1]
+    return filtered
+
 
 def _result_text(result: Dict) -> str:
     """组合结果中所有文本类字段，用于匹配 / 交叉编码。"""
@@ -62,7 +77,8 @@ class SimpleReranker:
                 f"source={r.get('source')}, base={float(base):.4f}"
                 + (f", kw×{kw_hits} +{kw_bonus:.2f}" if kw_bonus else "")
             )
-        return sorted(results, key=lambda r: r["final_score"], reverse=True)[:top_k]
+        top = sorted(results, key=lambda r: r["final_score"], reverse=True)[:top_k]
+        return _apply_score_threshold(top)
 
 
 def _extract_keywords(query: str) -> List[str]:
@@ -114,7 +130,8 @@ class CrossEncoderReranker:
                 f"source={r.get('source')}, ce={ce_score:.4f}, rrf={rrf:.6f}"
             )
 
-        return sorted(results, key=lambda r: r["final_score"], reverse=True)[:top_k]
+        top = sorted(results, key=lambda r: r["final_score"], reverse=True)[:top_k]
+        return _apply_score_threshold(top)
 
 
 # ---------------------------------------------------------------------------
