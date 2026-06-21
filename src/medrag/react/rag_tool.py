@@ -60,7 +60,7 @@ class RetrieveKnowledgeTool:
         try:
             retrieval = self._retriever.retrieve(query)
         except Exception as exc:
-            return f"检索出错：{exc}"
+            return f'[status=error] 检索系统异常：{exc}。请勿重试此工具，直接告知用户无法获取信息。'
 
         kg_results = retrieval.get("kg_results", [])
         qa_results = retrieval.get("qa_results", [])
@@ -92,4 +92,6 @@ class RetrieveKnowledgeTool:
                 parts.append(f"- {content[:500]}")
             parts.append("")
 
-        return "\n".join(parts).strip() if parts else "未找到相关信息。"
+        if not parts:
+            return "[status=not_found] 检索完成，但知识库中无匹配文档。可尝试换用不同关键词，或直接告知用户信息不足。"
+        return "\n".join(parts).strip()

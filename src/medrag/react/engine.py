@@ -52,7 +52,11 @@ _REACT_SYSTEM_PROMPT = """你是一个医疗智能助手，需要通过多步推
 6. 不得给出超出工具结果范围的诊断结论。
 7. 【强制】回答任何医疗相关问题前，必须先调用 retrieve_knowledge 工具检索知识库，不得直接依赖模型自身训练知识作答。
 8. 【强制】最终答案必须严格基于工具返回的 Observation 内容，不得在检索结果之外补充任何自身训练知识。若检索结果不足以回答问题，应明确告知用户"知识库中未找到相关信息，建议咨询医生"，而非自行填充答案。
-9. 【强制】若工具返回"未找到相关信息"，立即给出最终答案告知用户，不得用相同或相似的 query 重复调用同一工具。"""
+9. 【强制】终止与求助机制：
+   - 若同一工具以相同或高度相似的参数查询了 2 次且均返回 not_found，严禁进行第 3 次尝试。
+   - 若已在 2 种不同工具或思路上均失败（not_found 或 error），严禁继续盲目尝试，立即给出最终答案。
+   - Observation 中 status=not_found 表示数据缺失，可换思路重试；status=error 表示系统异常，禁止重试该工具。
+   - 遇到上述终止条件，必须立即停止调用工具，直接回复用户并说明原因。"""
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +154,8 @@ class ReActEngine:
         messages = self._build_initial_messages(query, system_context)
         steps: List[Dict] = []
         tool_results: Dict[str, Any] = {}
-        seen_actions: set = set()  # 重复调用检测
+        seen_actions: set = set()   # 重复调用检测
+        warned_actions: set = set() # 已警告过的重复，第二次直接 break
 
         for step_idx in range(1, self.max_steps + 1):
             logger.debug("ReAct step %d/%d", step_idx, self.max_steps)
@@ -176,11 +181,26 @@ class ReActEngine:
                 })
                 continue
 
-            # ── 重复调用检测：同一个 (工具, 参数) 再次出现说明陷入死循环 ──
+            # ── 重复调用检测：同一 (工具, 参数) 出现第 2 次先警告，第 3 次强制 break ──
             action_key = (action["name"], json.dumps(action["input"], sort_keys=True, ensure_ascii=False))
             if action_key in seen_actions:
-                logger.warning("ReAct loop detected at step %d: repeated action %s", step_idx, action_key)
-                break
+                if action_key in warned_actions:
+                    # 警告后 LLM 仍重复，强制结束
+                    logger.warning("ReAct hard break at step %d: repeated action after warning", step_idx)
+                    break
+                # 第一次重复：注入警告，让 LLM 有机会换策略
+                warned_actions.add(action_key)
+                logger.warning("ReAct loop warning at step %d: repeated action %s", step_idx, action_key)
+                messages.append({"role": "assistant", "content": response_text})
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        f"【系统警告】你刚刚已经以完全相同的参数调用过「{action['name']}」且未找到结果。"
+                        "根据规则 9，不能再使用相同参数重试此工具。"
+                        "请切换策略（换用不同关键词、调用其他工具）或直接向用户返回无法解答的结论。"
+                    ),
+                })
+                continue
             seen_actions.add(action_key)
 
             # ── 执行工具 ──
