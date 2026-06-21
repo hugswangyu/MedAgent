@@ -73,7 +73,7 @@ def base_tool_to_react_tool(base_tool) -> ReActTool:
         ]
     elif isinstance(base_tool, DepartmentGuide):
         params = [
-            ToolParam("symptom", "症状或疾病名称", "string"),
+            ToolParam("query", "症状或疾病名称", "string"),
         ]
     elif isinstance(base_tool, NormalRangeTool):
         params = [

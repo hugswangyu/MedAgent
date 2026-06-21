@@ -79,6 +79,10 @@ def _run_pipeline(cases: list[dict], username: str) -> list[dict]:
                 "expected_route": case.get("expected_route", ""),
                 "expected_context_keywords": case.get("expected_context_keywords", []),
                 "risk_info": result.get("risk_info", {}),
+                # 全链路 trace（供 bad case 分析用）
+                "react_trace": result.get("react_trace") or {},
+                "harness_trace": result.get("harness_trace") or {},
+                "eval_ragas": case.get("eval_ragas", True),
             }
         )
     return rows
@@ -173,9 +177,15 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--username", default="eval_user")
     parser.add_argument("--skip-ragas", action="store_true")
+    parser.add_argument("--ragas-only", action="store_true",
+                        help="只跑 eval_ragas=true 的案例")
     args = parser.parse_args()
 
     cases = _load_jsonl(Path(args.golden))
+    if args.ragas_only:
+        before = len(cases)
+        cases = [c for c in cases if c.get("eval_ragas", True)]
+        print(f"--ragas-only: {before} → {len(cases)} 条")
     if args.limit:
         cases = cases[: args.limit]
 

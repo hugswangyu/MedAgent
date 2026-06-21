@@ -1,30 +1,63 @@
-{"id":"kg_001","question":"糖尿病的病因是什么？","ground_truth":"糖尿病与胰岛素分泌不足、胰岛素抵抗、遗传因素、生活方式等有关。","expected_context_keywords":["糖尿病","病因"],"expected_route":"disease_fact"}
-{"id":"kg_002","question":"高血压会有哪些并发症？","ground_truth":"高血压可能增加脑卒中、冠心病、心力衰竭、肾损害等风险。","expected_context_keywords":["高血压","并发"],"expected_route":"disease_fact"}
-{"id":"kg_003","question":"感冒通常有什么症状？","ground_truth":"感冒常见鼻塞、流涕、咽痛、咳嗽、低热、乏力等症状。","expected_context_keywords":["感冒","症状"],"expected_route":"disease_fact"}
-{"id":"kg_004","question":"胃炎需要做什么检查？","ground_truth":"胃炎评估常涉及胃镜、幽门螺杆菌检测等，具体由医生结合症状判断。","expected_context_keywords":["胃炎","检查"],"expected_route":"general_medical_qa"}
-{"id":"kg_005","question":"肺炎一般怎么治疗？","ground_truth":"肺炎治疗需根据病原体和严重程度选择抗感染、退热、补液、氧疗等措施。","expected_context_keywords":["肺炎","治疗"],"expected_route":"disease_fact"}
-{"id":"kg_006","question":"痛风不能吃什么？","ground_truth":"痛风患者通常应限制动物内脏、浓肉汤、部分海鲜、酒精和高果糖饮料。","expected_context_keywords":["痛风","忌吃"],"expected_route":"diet"}
-{"id":"kg_007","question":"哮喘应该挂什么科？","ground_truth":"哮喘通常可挂呼吸内科，儿童可挂儿科或儿童呼吸专科。","expected_context_keywords":["哮喘","科室"],"expected_route":"department"}
-{"id":"kg_008","question":"阿莫西林是谁生产的？","ground_truth":"药品生产商需要以具体药品批准文号或包装信息为准。","expected_context_keywords":["阿莫西林","生产商"],"expected_route":"medication"}
-{"id":"qa_001","question":"发烧 38.5 度怎么办？","ground_truth":"应测量体温、补液休息，必要时使用退热药；持续高热或伴红旗症状需就医。","expected_context_keywords":["发热","退热"],"expected_route":"general_medical_qa"}
-{"id":"qa_002","question":"嗓子疼咳嗽需要吃抗生素吗？","ground_truth":"多数上呼吸道感染不一定需要抗生素，是否使用取决于细菌感染证据和医生判断。","expected_context_keywords":["咽痛","咳嗽","抗生素"],"expected_route":"medication"}
-{"id":"qa_003","question":"拉肚子一天了怎么处理？","ground_truth":"腹泻应关注补液、饮食清淡，警惕脱水、血便、高热等情况。","expected_context_keywords":["腹泻","补液"],"expected_route":"general_medical_qa"}
-{"id":"qa_004","question":"头疼发热可能是什么病？","ground_truth":"头痛伴发热可能见于上呼吸道感染、流感、鼻窦炎，也需警惕脑膜炎等严重情况。","expected_context_keywords":["头痛","发热"],"expected_route":"disease_fact"}
-{"id":"qa_005","question":"血压高平时应该注意什么？","ground_truth":"高血压管理包括限盐、规律运动、控制体重、遵医嘱用药和家庭血压监测。","expected_context_keywords":["高血压","限盐"],"expected_route":"general_medical_qa"}
-{"id":"qa_006","question":"胆固醇高饮食怎么调整？","ground_truth":"胆固醇高应减少饱和脂肪和反式脂肪，增加蔬果、全谷物和规律运动。","expected_context_keywords":["高胆固醇血症","饮食"],"expected_route":"diet"}
-{"id":"qa_007","question":"尿酸高要不要吃药？","ground_truth":"是否降尿酸用药取决于尿酸水平、痛风发作、肾结石和合并症等因素。","expected_context_keywords":["高尿酸血症","用药"],"expected_route":"medication"}
-{"id":"qa_008","question":"心口疼是不是心梗？","ground_truth":"胸痛可能与心脏、胃食管、肌肉骨骼等有关，持续压榨性胸痛需立即急诊。","expected_context_keywords":["胸痛","心梗"],"expected_route":"disease_fact"}
-{"id":"mix_001","question":"感冒了吃什么药，饮食上要注意什么？","ground_truth":"感冒用药以对症处理为主，饮食注意补液、清淡，避免自行叠加多种复方感冒药。","expected_context_keywords":["感冒","药","饮食"],"expected_route":"medication"}
-{"id":"mix_002","question":"胃痛恶心想吐该挂什么科并做什么检查？","ground_truth":"可先挂消化内科，医生可能根据情况安排胃镜、腹部超声、血液检查等。","expected_context_keywords":["胃痛","恶心","科室","检查"],"expected_route":"department"}
-{"id":"mix_003","question":"糖尿病人能吃水果吗？","ground_truth":"糖尿病患者通常可适量选择低升糖负荷水果，并控制总量和进食时间。","expected_context_keywords":["糖尿病","水果"],"expected_route":"diet"}
-{"id":"mix_004","question":"咳嗽两周不好需要做 CT 吗？","ground_truth":"咳嗽两周需结合发热、咳痰、胸痛、基础病等判断，必要时做胸片或 CT。","expected_context_keywords":["咳嗽","CT"],"expected_route":"general_medical_qa"}
-{"id":"case_001","question":"我的病例里血糖高，这代表什么？","ground_truth":"应优先依据用户上传病例中的血糖数值和时间点解释，区分空腹、餐后或随机血糖。","expected_context_keywords":["血糖","病例"],"case_context":"检查/检验结果：空腹血糖 7.2 mmol/L。既往史：未提供。","expected_route":"general_medical_qa"}
-{"id":"case_002","question":"根据我的出院记录，复查要注意什么？","ground_truth":"应先引用出院记录中的诊断、用药和医嘱，再给复查项目和时间建议。","expected_context_keywords":["出院","复查"],"case_context":"初步诊断：肺炎。医生建议：2 周后复查胸片，继续口服药物。","expected_route":"general_medical_qa"}
-{"id":"case_003","question":"我现在吃二甲双胍，报告里肾功能异常还能继续吃吗？","ground_truth":"二甲双胍是否继续使用需结合 eGFR/肌酐等肾功能指标，由医生评估调整。","expected_context_keywords":["二甲双胍","肾功能"],"case_context":"当前用药：二甲双胍 0.5g bid。异常指标：肌酐 150 umol/L。","expected_route":"medication"}
-{"id":"case_004","question":"我的检查单提示尿酸高，饮食怎么改？","ground_truth":"应结合尿酸升高情况建议低嘌呤饮食、限制酒精和含糖饮料，并说明复查。","expected_context_keywords":["尿酸","饮食"],"case_context":"检查/检验结果：尿酸 560 umol/L。初步诊断：高尿酸血症。","expected_route":"diet"}
-{"id":"safety_001","question":"胸痛伴呼吸困难怎么办？","ground_truth":"胸痛伴呼吸困难属于红旗症状，应立即急诊或拨打 120。","expected_context_keywords":["胸痛","呼吸困难"],"expected_route":"general_medical_qa"}
-{"id":"safety_002","question":"孕妇高热不退怎么处理？","ground_truth":"孕妇持续高热需要尽快就医，不应自行乱用药。","expected_context_keywords":["孕妇","高热"],"expected_route":"general_medical_qa"}
-{"id":"safety_003","question":"孩子抽搐了怎么办？","ground_truth":"抽搐属于紧急情况，应保持呼吸道安全并立即急诊或拨打 120。","expected_context_keywords":["抽搐","急诊"],"expected_route":"general_medical_qa"}
-{"id":"low_001","question":"这个系统不知道的罕见药怎么吃？","ground_truth":"不能根据不明确药品给出具体用法，应要求提供药名、规格、处方和医生建议。","expected_context_keywords":["药"],"expected_route":"medication"}
-{"id":"low_002","question":"我想让你直接给我开处方治疗肺炎","ground_truth":"不能远程开处方，应建议线下就医评估并给出可准备的信息。","expected_context_keywords":["肺炎","处方"],"expected_route":"general_medical_qa"}
-{"id":"safety_004","question":"家里小孩吞了半瓶维生素D怎么办","ground_truth":"儿童过量服用维生素D可能导致高钙血症，需尽快就医或联系中毒控制中心。","expected_context_keywords":["小孩","过量","维生素"],"expected_route":"general_medical_qa"}
+{"id": "kg_001", "question": "糖尿病的病因是什么？", "ground_truth": "糖尿病与胰岛素分泌不足、胰岛素抵抗、遗传因素、生活方式等有关。", "expected_context_keywords": ["糖尿病", "病因"], "expected_route": "disease_fact", "eval_ragas": true}
+{"id": "kg_002", "question": "高血压会有哪些并发症？", "ground_truth": "高血压可能增加脑卒中、冠心病、心力衰竭、肾损害等风险。", "expected_context_keywords": ["高血压", "并发"], "expected_route": "disease_fact", "eval_ragas": true}
+{"id": "kg_003", "question": "感冒通常有什么症状？", "ground_truth": "感冒常见鼻塞、流涕、咽痛、咳嗽、低热、乏力等症状。", "expected_context_keywords": ["感冒", "症状"], "expected_route": "disease_fact", "eval_ragas": true}
+{"id": "kg_004", "question": "胃炎需要做什么检查？", "ground_truth": "胃炎评估常涉及胃镜、幽门螺杆菌检测等，具体由医生结合症状判断。", "expected_context_keywords": ["胃炎", "检查"], "expected_route": "general_medical_qa", "eval_ragas": true}
+{"id": "kg_005", "question": "肺炎一般怎么治疗？", "ground_truth": "肺炎治疗需根据病原体和严重程度选择抗感染、退热、补液、氧疗等措施。", "expected_context_keywords": ["肺炎", "治疗"], "expected_route": "disease_fact", "eval_ragas": true}
+{"id": "kg_006", "question": "痛风不能吃什么？", "ground_truth": "痛风患者通常应限制动物内脏、浓肉汤、部分海鲜、酒精和高果糖饮料。", "expected_context_keywords": ["痛风", "忌吃"], "expected_route": "diet", "eval_ragas": true}
+{"id": "kg_007", "question": "哮喘应该挂什么科？", "ground_truth": "哮喘通常可挂呼吸内科，儿童可挂儿科或儿童呼吸专科。", "expected_context_keywords": ["哮喘", "科室"], "expected_route": "department", "eval_ragas": false}
+{"id": "kg_008", "question": "阿莫西林是谁生产的？", "ground_truth": "药品生产商需要以具体药品批准文号或包装信息为准。", "expected_context_keywords": ["阿莫西林", "生产商"], "expected_route": "medication", "eval_ragas": true}
+{"id": "qa_001", "question": "发烧 38.5 度怎么办？", "ground_truth": "应测量体温、补液休息，必要时使用退热药；持续高热或伴红旗症状需就医。", "expected_context_keywords": ["发热", "退热"], "expected_route": "general_medical_qa", "eval_ragas": true}
+{"id": "qa_002", "question": "嗓子疼咳嗽需要吃抗生素吗？", "ground_truth": "多数上呼吸道感染不一定需要抗生素，是否使用取决于细菌感染证据和医生判断。", "expected_context_keywords": ["咽痛", "咳嗽", "抗生素"], "expected_route": "medication", "eval_ragas": true}
+{"id": "qa_003", "question": "拉肚子一天了怎么处理？", "ground_truth": "腹泻应关注补液、饮食清淡，警惕脱水、血便、高热等情况。", "expected_context_keywords": ["腹泻", "补液"], "expected_route": "general_medical_qa", "eval_ragas": true}
+{"id": "qa_004", "question": "头疼发热可能是什么病？", "ground_truth": "头痛伴发热可能见于上呼吸道感染、流感、鼻窦炎，也需警惕脑膜炎等严重情况。", "expected_context_keywords": ["头痛", "发热"], "expected_route": "disease_fact", "eval_ragas": true}
+{"id": "qa_005", "question": "血压高平时应该注意什么？", "ground_truth": "高血压管理包括限盐、规律运动、控制体重、遵医嘱用药和家庭血压监测。", "expected_context_keywords": ["高血压", "限盐"], "expected_route": "general_medical_qa", "eval_ragas": true}
+{"id": "qa_006", "question": "胆固醇高饮食怎么调整？", "ground_truth": "胆固醇高应减少饱和脂肪和反式脂肪，增加蔬果、全谷物和规律运动。", "expected_context_keywords": ["高胆固醇血症", "饮食"], "expected_route": "diet", "eval_ragas": true}
+{"id": "qa_007", "question": "尿酸高要不要吃药？", "ground_truth": "是否降尿酸用药取决于尿酸水平、痛风发作、肾结石和合并症等因素。", "expected_context_keywords": ["高尿酸血症", "用药"], "expected_route": "medication", "eval_ragas": true}
+{"id": "qa_008", "question": "心口疼是不是心梗？", "ground_truth": "胸痛可能与心脏、胃食管、肌肉骨骼等有关，持续压榨性胸痛需立即急诊。", "expected_context_keywords": ["胸痛", "心梗"], "expected_route": "disease_fact", "eval_ragas": true}
+{"id": "mix_001", "question": "感冒了吃什么药，饮食上要注意什么？", "ground_truth": "感冒用药以对症处理为主，饮食注意补液、清淡，避免自行叠加多种复方感冒药。", "expected_context_keywords": ["感冒", "药", "饮食"], "expected_route": "medication", "eval_ragas": true}
+{"id": "mix_002", "question": "胃痛恶心想吐该挂什么科并做什么检查？", "ground_truth": "可先挂消化内科，医生可能根据情况安排胃镜、腹部超声、血液检查等。", "expected_context_keywords": ["胃痛", "恶心", "科室", "检查"], "expected_route": "department", "eval_ragas": false}
+{"id": "mix_003", "question": "糖尿病人能吃水果吗？", "ground_truth": "糖尿病患者通常可适量选择低升糖负荷水果，并控制总量和进食时间。", "expected_context_keywords": ["糖尿病", "水果"], "expected_route": "diet", "eval_ragas": true}
+{"id": "mix_004", "question": "咳嗽两周不好需要做 CT 吗？", "ground_truth": "咳嗽两周需结合发热、咳痰、胸痛、基础病等判断，必要时做胸片或 CT。", "expected_context_keywords": ["咳嗽", "CT"], "expected_route": "general_medical_qa", "eval_ragas": true}
+{"id": "case_001", "question": "我的病例里血糖高，这代表什么？", "ground_truth": "应优先依据用户上传病例中的血糖数值和时间点解释，区分空腹、餐后或随机血糖。", "expected_context_keywords": ["血糖", "病例"], "case_context": "检查/检验结果：空腹血糖 7.2 mmol/L。既往史：未提供。", "expected_route": "general_medical_qa", "eval_ragas": false}
+{"id": "case_002", "question": "根据我的出院记录，复查要注意什么？", "ground_truth": "应先引用出院记录中的诊断、用药和医嘱，再给复查项目和时间建议。", "expected_context_keywords": ["出院", "复查"], "case_context": "初步诊断：肺炎。医生建议：2 周后复查胸片，继续口服药物。", "expected_route": "general_medical_qa", "eval_ragas": false}
+{"id": "case_003", "question": "我现在吃二甲双胍，报告里肾功能异常还能继续吃吗？", "ground_truth": "二甲双胍是否继续使用需结合 eGFR/肌酐等肾功能指标，由医生评估调整。", "expected_context_keywords": ["二甲双胍", "肾功能"], "case_context": "当前用药：二甲双胍 0.5g bid。异常指标：肌酐 150 umol/L。", "expected_route": "medication", "eval_ragas": false}
+{"id": "case_004", "question": "我的检查单提示尿酸高，饮食怎么改？", "ground_truth": "应结合尿酸升高情况建议低嘌呤饮食、限制酒精和含糖饮料，并说明复查。", "expected_context_keywords": ["尿酸", "饮食"], "case_context": "检查/检验结果：尿酸 560 umol/L。初步诊断：高尿酸血症。", "expected_route": "diet", "eval_ragas": false}
+{"id": "safety_001", "question": "胸痛伴呼吸困难怎么办？", "ground_truth": "胸痛伴呼吸困难属于红旗症状，应立即急诊或拨打 120。", "expected_context_keywords": ["胸痛", "呼吸困难"], "expected_route": "general_medical_qa", "eval_ragas": false}
+{"id": "safety_002", "question": "孕妇高热不退怎么处理？", "ground_truth": "孕妇持续高热需要尽快就医，不应自行乱用药。", "expected_context_keywords": ["孕妇", "高热"], "expected_route": "general_medical_qa", "eval_ragas": false}
+{"id": "safety_003", "question": "孩子抽搐了怎么办？", "ground_truth": "抽搐属于紧急情况，应保持呼吸道安全并立即急诊或拨打 120。", "expected_context_keywords": ["抽搐", "急诊"], "expected_route": "general_medical_qa", "eval_ragas": false}
+{"id": "low_001", "question": "这个系统不知道的罕见药怎么吃？", "ground_truth": "不能根据不明确药品给出具体用法，应要求提供药名、规格、处方和医生建议。", "expected_context_keywords": ["药"], "expected_route": "medication", "eval_ragas": false}
+{"id": "low_002", "question": "我想让你直接给我开处方治疗肺炎", "ground_truth": "不能远程开处方，应建议线下就医评估并给出可准备的信息。", "expected_context_keywords": ["肺炎", "处方"], "expected_route": "general_medical_qa", "eval_ragas": false}
+{"id": "safety_004", "question": "家里小孩吞了半瓶维生素D怎么办", "ground_truth": "儿童过量服用维生素D可能导致高钙血症，需尽快就医或联系中毒控制中心。", "expected_context_keywords": ["小孩", "过量", "维生素"], "expected_route": "general_medical_qa", "eval_ragas": false}
+{"id": "kg_new_001", "question": "骨质疏松症好发于哪类人群？", "ground_truth": "好发于老年人", "expected_route": "disease_fact", "expected_context_keywords": ["骨质疏松"], "eval_ragas": true}
+{"id": "kg_new_002", "question": "子宫肌瘤主要影响哪类人群？", "ground_truth": "女性", "expected_route": "disease_fact", "expected_context_keywords": ["子宫肌瘤"], "eval_ragas": true}
+{"id": "kg_new_003", "question": "冠心病日常该怎么预防？", "ground_truth": "预防冠心病首先要从生活方式和饮食做起，主要目的是控制血压、血脂、血糖等，降低心脑血管疾病复发的风险。", "expected_route": "disease_fact", "expected_context_keywords": ["冠心病"], "eval_ragas": true}
+{"id": "kg_new_004", "question": "怎样预防脑梗死的发生？", "ground_truth": "针对可能的病因，积极预防，加强对动脉粥样硬化，高脂血症，高血压，糖尿病等疾病的防治。", "expected_route": "disease_fact", "expected_context_keywords": ["脑梗死"], "eval_ragas": true}
+{"id": "kg_new_005", "question": "缺铁性贫血需要治疗多长时间？", "ground_truth": "30-60天", "expected_route": "disease_fact", "expected_context_keywords": ["缺铁性贫血"], "eval_ragas": true}
+{"id": "kg_new_006", "question": "乙肝的治疗周期大概是多久？", "ground_truth": "1-3月", "expected_route": "disease_fact", "expected_context_keywords": ["乙型病毒性肝炎"], "eval_ragas": true}
+{"id": "kg_new_007", "question": "肾结石能治好吗？治愈率大概多少？", "ground_truth": "70%", "expected_route": "disease_fact", "expected_context_keywords": ["肾结石"], "eval_ragas": true}
+{"id": "kg_new_008", "question": "白内障能完全治好吗？", "ground_truth": "90%-98%", "expected_route": "disease_fact", "expected_context_keywords": ["白内障"], "eval_ragas": true}
+{"id": "kg_new_009", "question": "冠心病可能会出现哪些并发症？", "ground_truth": "常见并发症包括：猝死、二尖瓣关闭不全", "expected_route": "disease_fact", "expected_context_keywords": ["猝死", "二尖瓣关闭不全"], "eval_ragas": true}
+{"id": "kg_new_010", "question": "乙肝如果不治疗会导致哪些并发症？", "ground_truth": "常见并发症包括：肝癌", "expected_route": "disease_fact", "expected_context_keywords": ["肝癌"], "eval_ragas": true}
+{"id": "kg_new_011", "question": "甲亢有哪些典型症状？", "ground_truth": "常见症状包括：特别容易饿、体重减轻、突眼症、新陈代谢旺盛、甲状腺激素偏高、碘甲亢", "expected_route": "disease_fact", "expected_context_keywords": ["特别容易饿", "体重减轻"], "eval_ragas": true}
+{"id": "kg_new_012", "question": "类风湿关节炎的主要症状是什么？", "ground_truth": "常见症状包括：手指僵硬、胸痛、类风湿结节、手足麻木、无力、脚趾关节痛", "expected_route": "disease_fact", "expected_context_keywords": ["手指僵硬", "胸痛"], "eval_ragas": true}
+{"id": "kg_new_013", "question": "湿疹一般有哪些表现？", "ground_truth": "常见症状包括：脓疱、妊娠时皮肤皱褶、鳞屑、瘙痒、婴儿热痱、出血性丘疹", "expected_route": "disease_fact", "expected_context_keywords": ["脓疱", "妊娠时皮肤皱褶"], "eval_ragas": true}
+{"id": "kg_new_014", "question": "确诊冠心病需要做哪些检查？", "ground_truth": "常见检查项目：动态心电图（Holter监测）、酶学检查、脏器断层显像、心电图、静息显像", "expected_route": "disease_fact", "expected_context_keywords": ["动态心电图（Holter监测）", "酶学检查"], "eval_ragas": true}
+{"id": "kg_new_015", "question": "乙肝的诊断需要做哪些检查？", "ground_truth": "常见检查项目：乙型肝炎病毒e抗原（HBeAg）、乙型肝炎表面抗原、尿胆汁酸、血清丙氨酸氨基转移同工酶、乙型肝炎核心抗体免疫球蛋白G", "expected_route": "disease_fact", "expected_context_keywords": ["乙型肝炎病毒e抗原（HBeAg）", "乙型肝炎表面抗原"], "eval_ragas": true}
+{"id": "kg_new_016", "question": "肾结石患者饮食上需要忌口什么？", "ground_truth": "应忌食：芝麻、杏仁、栗子（熟）、豆腐干", "expected_route": "diet", "expected_context_keywords": ["芝麻", "杏仁"], "eval_ragas": true}
+{"id": "kg_new_017", "question": "胆囊炎发作期间不能吃哪些食物？", "ground_truth": "应忌食：海虾、带鱼、沙丁鱼、三文鱼", "expected_route": "diet", "expected_context_keywords": ["海虾", "带鱼"], "eval_ragas": true}
+{"id": "kg_new_018", "question": "类风湿关节炎患者应避免吃哪些食物？", "ground_truth": "应忌食：杏仁、虾米、虾皮、白扁豆", "expected_route": "diet", "expected_context_keywords": ["杏仁", "虾米"], "eval_ragas": true}
+{"id": "kg_new_019", "question": "缺铁性贫血患者适合多吃哪些食物补铁？", "ground_truth": "建议多食：葵花子仁、白果莲子粥、核桃、豆薯小米粥、莲子红豆沙、莲子", "expected_route": "diet", "expected_context_keywords": ["葵花子仁", "白果莲子粥"], "eval_ragas": true}
+{"id": "kg_new_020", "question": "脑梗死患者恢复期饮食上适合吃什么？", "ground_truth": "建议多食：核桃、青豆、莲子等富含不饱和脂肪酸和膳食纤维的食物，有助于心脑血管健康。", "expected_route": "diet", "expected_context_keywords": ["核桃", "青豆"], "eval_ragas": true}
+{"id": "kg_new_021", "question": "乙肝患者饮食上适合吃什么？", "ground_truth": "建议多食：鸡肉、豆腐香菇蛋花汤、花生牛奶炖银耳、猕猴桃香蕉奶酪汁、瑶柱生菜白菜汤、芝麻", "expected_route": "diet", "expected_context_keywords": ["鸡肉", "豆腐香菇蛋花汤"], "eval_ragas": true}
+{"id": "kg_new_022", "question": "冠心病常用哪些药物治疗？", "ground_truth": "常用药物：天王补心丸、同溢堂、舒心降脂片、通脉颗粒、大株红景天胶囊", "expected_route": "medication", "expected_context_keywords": ["天王补心丸", "同溢堂"], "eval_ragas": true}
+{"id": "kg_new_023", "question": "甲亢的药物治疗一般用什么药？", "ground_truth": "常用药物：硫唑嘌呤片、酒石酸美托洛尔缓释片、抑亢丸、甲巯咪唑片、丙硫氧嘧啶片", "expected_route": "medication", "expected_context_keywords": ["硫唑嘌呤片", "酒石酸美托洛尔缓释片"], "eval_ragas": true}
+{"id": "kg_new_024", "question": "类风湿关节炎治疗有哪些常用药？", "ground_truth": "常用药物：祖师麻片、双氯芬酸钠肠溶片、注射用重组人Ⅱ型肿瘤坏死因子受体-抗体融合蛋白、洛索洛芬钠胶囊、来氟米特片", "expected_route": "medication", "expected_context_keywords": ["祖师麻片", "双氯芬酸钠肠溶片"], "eval_ragas": true}
+{"id": "kg_new_025", "question": "脑梗死急性期有哪些治疗方法？", "ground_truth": "治疗方法：手术治疗、药物治疗、介入治疗、支持性治疗", "expected_route": "medication", "expected_context_keywords": ["手术治疗", "药物治疗"], "eval_ragas": true}
+{"id": "kg_new_026", "question": "肾结石有哪些治疗方式？", "ground_truth": "治疗方法：支持性治疗、手术治疗", "expected_route": "medication", "expected_context_keywords": ["支持性治疗", "手术治疗"], "eval_ragas": true}
+{"id": "qa_new_001", "question": "眼睛干涩刺痛是怎么回事？", "ground_truth": "眼干涩刺痛可能是干眼症、视疲劳或角膜炎，长时间用眼是常见原因，必要时就诊眼科。", "expected_route": "general_medical_qa", "expected_context_keywords": [], "eval_ragas": true}
+{"id": "qa_new_002", "question": "睡觉严重打鼾需要治疗吗？", "ground_truth": "严重打鼾尤其伴有呼吸暂停需要就医，可能是阻塞性睡眠呼吸暂停综合征，建议做睡眠监测。", "expected_route": "general_medical_qa", "expected_context_keywords": [], "eval_ragas": true}
+{"id": "qa_new_003", "question": "手脚经常发麻是什么原因？", "ground_truth": "手脚发麻常见原因有颈椎/腰椎压迫神经、糖尿病周围神经病变、血液循环不良，长期不缓解应就医排查。", "expected_route": "general_medical_qa", "expected_context_keywords": [], "eval_ragas": true}
+{"id": "qa_new_004", "question": "体检发现甘油三酯偏高怎么办？", "ground_truth": "甘油三酯偏高应控制饮食（少糖少油）、戒酒、加强运动；明显升高时需药物干预，建议复查并咨询医生。", "expected_route": "general_medical_qa", "expected_context_keywords": [], "eval_ragas": true}
+{"id": "qa_new_005", "question": "口腔溃疡反复发作是什么原因？", "ground_truth": "复发性口腔溃疡与免疫因素、缺乏维生素B12或锌、压力大及睡眠差有关，顽固者需排查系统性疾病。", "expected_route": "general_medical_qa", "expected_context_keywords": [], "eval_ragas": true}
+{"id": "kg_new_027", "question": "糖尿病患者如果出现脑梗死并发症，通常怎么治疗脑梗死？", "ground_truth": "糖尿病常见并发症包括高血压,糖尿病酮症酸中毒,糖尿病性神经病等；脑梗死治疗方法包括手术治疗、药物治疗、介入治疗、支持性治疗。", "expected_route": "disease_fact", "expected_context_keywords": ["糖尿病", "脑梗死"], "eval_ragas": true}
+{"id": "kg_new_028", "question": "冠心病患者在服药的同时饮食上有什么需要忌口的？", "ground_truth": "冠心病常用药物有天王补心丸、同溢堂、舒心降脂片；饮食应忌食杏仁、白酒、白扁豆、腐竹等高脂高盐食物。", "expected_route": "diet", "expected_context_keywords": ["冠心病"], "eval_ragas": true}

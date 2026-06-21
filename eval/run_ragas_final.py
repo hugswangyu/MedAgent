@@ -98,6 +98,9 @@ answer_relevancy.strictness = 1
 
 _parser = argparse.ArgumentParser()
 _parser.add_argument("--report", default=str(_root / "eval" / "reports" / "ragas_report.json"))
+_parser.add_argument("--limit", type=int, default=0, help="只评测前 N 条（0=全量）")
+_parser.add_argument("--ragas-only", action="store_true",
+                     help="只评测 eval_ragas=true 的案例（过滤工具/安全/病历类）")
 _args = _parser.parse_args()
 
 # 从已生成的报告中读取 answers 和 contexts
@@ -110,6 +113,13 @@ else:
     sys.exit(1)
 
 print(f"Loaded {len(rows)} rows from {report_path}")
+if _args.ragas_only:
+    before = len(rows)
+    rows = [r for r in rows if r.get("eval_ragas", True)]
+    print(f"--ragas-only: {before} → {len(rows)} 条（跳过工具/安全/病历/边界类）")
+if _args.limit > 0:
+    rows = rows[:_args.limit]
+    print(f"Limiting to first {len(rows)} rows (--limit {_args.limit})")
 
 # 构造 RAGAS 数据集
 dataset = Dataset.from_list([
@@ -182,3 +192,68 @@ report["ragas"] = {
 }
 report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 print(f"\nReport updated: {report_path}")
+
+# ── Bad case 全链路报告 ──────────────────────────────────────────────────────
+AVG_BAD_THRESHOLD = 0.45   # 非 NaN 指标均值低于此值视为 bad case
+KEY_METRIC_THRESHOLD = 0.2  # faithfulness 或 context_recall 极低也视为 bad case
+
+bad_cases = []
+for i, row_score in enumerate(per_row):
+    row_data = rows[i]
+    metrics = {c: row_score.get(c) for c in metric_cols}
+    valid_vals = [v for v in metrics.values() if isinstance(v, float) and not math.isnan(v)]
+    is_nan = len(valid_vals) < len(metric_cols)
+    avg_score = sum(valid_vals) / len(valid_vals) if valid_vals else float("nan")
+    is_low_avg = not math.isnan(avg_score) and avg_score < AVG_BAD_THRESHOLD
+    is_key_fail = any(
+        isinstance(metrics.get(k), float) and not math.isnan(metrics[k]) and metrics[k] < KEY_METRIC_THRESHOLD
+        for k in ("faithfulness", "context_recall")
+    )
+    if not (is_nan or is_low_avg or is_key_fail):
+        continue
+
+    # 整理 ReAct 推理步骤
+    react_trace = row_data.get("react_trace") or {}
+    react_steps = []
+    for step in react_trace.get("steps") or []:
+        react_steps.append({
+            "step": step.get("step"),
+            "thought": step.get("thought", ""),
+            "action": step.get("action", ""),
+            "action_input": step.get("action_input"),
+            "observation": step.get("observation", ""),
+        })
+
+    bad_cases.append({
+        "index": i,
+        "id": row_data.get("id", ""),
+        # ── 1. 用户查询 ──
+        "query": row_data.get("question", ""),
+        "ground_truth": row_data.get("ground_truth", ""),
+        # ── 2. 路由决策 ──
+        "route": row_data.get("route", {}),
+        # ── 3. 检索到的上下文 ──
+        "contexts": row_data.get("contexts", []),
+        # ── 4. ReAct 推理步骤 ──
+        "react_steps": react_steps,
+        "harness_trace": row_data.get("harness_trace", {}),
+        # ── 5. 最终回答 ──
+        "answer": row_data.get("answer", ""),
+        # ── 6. RAGAS 指标 ──
+        "ragas_scores": {
+            k: (None if (isinstance(v, float) and math.isnan(v)) else round(v, 4) if isinstance(v, float) else v)
+            for k, v in metrics.items()
+        },
+        "avg_score": round(avg_score, 4) if not math.isnan(avg_score) else None,
+        "has_nan": is_nan,
+        "nan_metrics": [c for c in metric_cols if metrics.get(c) != metrics.get(c)],
+    })
+
+bad_cases_path = report_path.parent / "bad_cases_trace.json"
+bad_cases_path.write_text(
+    json.dumps({"threshold_avg": AVG_BAD_THRESHOLD, "threshold_key": KEY_METRIC_THRESHOLD,
+                "count": len(bad_cases), "total": len(rows), "cases": bad_cases},
+               ensure_ascii=False, indent=2),
+    encoding="utf-8",
+)
+print(f"\nBad cases ({len(bad_cases)}/{len(rows)}) saved to: {bad_cases_path}")
