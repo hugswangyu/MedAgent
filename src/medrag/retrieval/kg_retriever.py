@@ -6,10 +6,14 @@
 不重写原有逻辑 —— NER 从 ``ner_model`` 导入，
 意图识别复用已有的意图识别提示词，
 Cypher 模式镜像了原 generate_prompt 阶段的查询逻辑。
+
+长文本属性（疾病病因/预防措施/疾病简介）走 HAS_CHUNK + 余弦召回，
+其余短属性和关系查询保持原有 Cypher 逻辑不变。
 """
 
 from __future__ import annotations
 
+import logging
 import random
 from typing import Dict, List, Optional
 
@@ -26,20 +30,24 @@ try:
 except Exception:  # pragma: no cover - optional NER runtime dependency
     zwk = None  # type: ignore[assignment]
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # 意图 → Cypher 映射
 # ---------------------------------------------------------------------------
 # 每个元组: (keyword, query_type, relation_or_attribute, target_type, required_entity_type)
-# query_type: "attribute" | "relation" | "reverse_relation"
+# query_type: "attribute" | "chunk_attribute" | "relation" | "reverse_relation"
+#
+# chunk_attribute: 属性值较长，走 HAS_CHUNK + 余弦召回
+# attribute:       属性值较短，直接 RETURN a.<attr>
 #
 # 注意：keyword 顺序很重要。"治疗周期" 必须在 "治疗" 之前检查以避免
 # 错误匹配；"查询疾病所属科目" 是整句级别的检查
-# 此列表完全镜像了原 generate_prompt 中的 if/elif 链。
 # ---------------------------------------------------------------------------
 _INTENT_SPEC: List[tuple] = [
-    ("简介",           "attribute",        "疾病简介",       None,       "疾病"),
-    ("病因",           "attribute",        "疾病病因",       None,       "疾病"),
-    ("预防",           "attribute",        "预防措施",       None,       "疾病"),
+    ("简介",           "chunk_attribute",  "疾病简介",       None,       "疾病"),
+    ("病因",           "chunk_attribute",  "疾病病因",       None,       "疾病"),
+    ("预防",           "chunk_attribute",  "预防措施",       None,       "疾病"),
     ("治疗周期",       "attribute",        "治疗周期",       None,       "疾病"),
     ("治愈概率",       "attribute",        "治愈概率",       None,       "疾病"),
     ("易感人群",       "attribute",        "疾病易感人群",   None,       "疾病"),
@@ -54,6 +62,15 @@ _INTENT_SPEC: List[tuple] = [
     ("生产商",         "reverse_relation", "生产",           "药品商",   "药品"),
 ]
 
+# chunk_attribute 对应的 Neo4j 属性名（与 KGChunk.attribute 字段对应）
+_CHUNK_ATTR_MAP = {
+    "疾病简介": "疾病简介",
+    "疾病病因": "疾病病因",
+    "预防措施": "预防措施",
+}
+
+CHUNK_TOP_K = 3  # 每次从 Chunk 中召回的段落数
+
 
 class KGRetriever:
     """Neo4j 医学知识图谱统一检索器。
@@ -61,17 +78,15 @@ class KGRetriever:
     依赖**现有**的 NER 流水线（``ner_model``），复用了已有的 Cypher 查询模式。
     意图识别使用 DeepSeek 配合已有的 few-shot 意图识别提示词。
 
-    用法::
+    长文本属性（疾病病因/预防措施/疾病简介）通过 HAS_CHUNK 关系 + 余弦相似度
+    召回最相关的 top-k 段落，避免将万字原文直接塞入上下文。
 
-        # 获取 NER 组件
-        rule = zwk.rule_find()
-        tfidf_r = zwk.tfidf_alignment()
-        ...
+    用法::
 
         retriever = KGRetriever(
             bert_model, bert_tokenizer, rule, tfidf_r, device, idx2tag,
         )
-        results = retriever.search("感冒了怎么办")
+        results = retriever.search("糖尿病的病因是什么？")
         # results 为 List[Dict]，每个字典包含:
         #   source, intent, entity, relation, answer, evidence, score
     """
@@ -86,6 +101,7 @@ class KGRetriever:
         idx2tag,
         neo4j_client: Optional[py2neo.Graph] = None,
         llm_client=None,
+        embedding_model=None,
     ):
         self.bert_model = bert_model
         self.bert_tokenizer = bert_tokenizer
@@ -95,17 +111,16 @@ class KGRetriever:
         self.idx2tag = idx2tag
 
         self.neo4j = neo4j_client or self._create_neo4j_client()
-
         self.llm = llm_client or get_llm_client()
+        self._embedder = embedding_model or self._create_embedding_model()
 
     # ------------------------------------------------------------------
-    # 内部辅助方法
+    # 初始化辅助
     # ------------------------------------------------------------------
 
     @staticmethod
     def _create_neo4j_client():
         if py2neo is None:
-            logger.warning("py2neo not available, KGRetriever will return empty results")
             return None
         try:
             return py2neo.Graph(
@@ -117,6 +132,19 @@ class KGRetriever:
         except Exception as exc:
             logger.warning("Neo4j unavailable (%s), KGRetriever will return empty results", exc)
             return None
+
+    @staticmethod
+    def _create_embedding_model():
+        try:
+            from medrag.vectors.embedding import EmbeddingModel
+            return EmbeddingModel()
+        except Exception as exc:
+            logger.warning("EmbeddingModel unavailable (%s), chunk retrieval will fall back to full text", exc)
+            return None
+
+    # ------------------------------------------------------------------
+    # NER
+    # ------------------------------------------------------------------
 
     def _get_entities(self, query: str) -> Dict[str, str]:
         """NER 流水线: {entity_type: canonical_name}。"""
@@ -136,15 +164,7 @@ class KGRetriever:
             return {}
 
     # ------------------------------------------------------------------
-    # 意图识别
-    # ------------------------------------------------------------------
-    # 以下提示词从原 Intent_Recognition 模块复制而来，避免循环导入。
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Cypher 查询辅助方法
-    # ------------------------------------------------------------------
-    # 查询属性/关系并返回原始数据，而非提示字符串。
+    # Cypher 查询：短属性 / 关系（原有逻辑不变）
     # ------------------------------------------------------------------
 
     def _query_attribute(self, entity: str, attribute: str) -> Optional[str]:
@@ -205,6 +225,60 @@ class KGRetriever:
         return None
 
     # ------------------------------------------------------------------
+    # Chunk 召回：Cypher 精确定位 + 余弦相似度局部排序
+    # ------------------------------------------------------------------
+
+    def _query_chunks(
+        self,
+        entity: str,
+        attribute: str,
+        query: str,
+        top_k: int = CHUNK_TOP_K,
+    ) -> Optional[List[str]]:
+        """Cypher 锁定实体的 Chunk，余弦相似度选出最相关的 top_k 段。
+
+        若 embedding 模型不可用或该实体无 Chunk，降级为返回原始全文属性值。
+        """
+        if self.neo4j is None:
+            return None
+
+        # 1. 嵌入查询
+        query_emb: Optional[List[float]] = None
+        if self._embedder is not None:
+            try:
+                query_emb = self._embedder.encode_one(query, is_query=True)
+            except Exception:
+                pass
+
+        # 2. 图遍历取出该实体该属性的所有 Chunk
+        cypher = """
+            MATCH (d:疾病 {名称: $entity})-[:HAS_CHUNK]->(c:KGChunk {attribute: $attribute})
+            RETURN c.text AS text, c.order AS ord, c.embedding AS emb
+            ORDER BY c.order
+        """
+        try:
+            rows = self.neo4j.run(cypher, entity=entity, attribute=attribute).data()
+        except Exception:
+            rows = []
+
+        if not rows:
+            # 无 Chunk，降级为直接查属性
+            val = self._query_attribute(entity, attribute)
+            return [val] if val else None
+
+        # 3. 有查询向量时做余弦排序，否则按 order 顺序取前 top_k
+        if query_emb:
+            def _cosine(a: List[float], b: List[float]) -> float:
+                dot = sum(x * y for x, y in zip(a, b))
+                na = sum(x * x for x in a) ** 0.5
+                nb = sum(x * x for x in b) ** 0.5
+                return dot / (na * nb + 1e-9)
+
+            rows.sort(key=lambda r: _cosine(query_emb, r["emb"]), reverse=True)
+
+        return [r["text"] for r in rows[:top_k]]
+
+    # ------------------------------------------------------------------
     # 公开接口
     # ------------------------------------------------------------------
 
@@ -221,8 +295,7 @@ class KGRetriever:
             自然语言医学问题。
         intents:
             原始意图识别结果。为 *None*（默认）时，通过 DeepSeek
-            自动检测意图。可传入预计算结果
-            （``Intent_Recognition`` 的输出）以跳过 LLM 调用。
+            自动检测意图。可传入预计算结果以跳过 LLM 调用。
 
         Returns
         -------
@@ -259,7 +332,16 @@ class KGRetriever:
             evidence = None
             answer_parts: List[str] = []
 
-            if qtype == "attribute":
+            if qtype == "chunk_attribute":
+                # 长文本：Cypher 锁定实体 → 余弦召回 top-k Chunk
+                chunks = self._query_chunks(entity, rel_attr, query)
+                if chunks:
+                    evidence = chunks
+                    header = f"{entity} [{rel_attr}]:\n"
+                    answer_parts.append(header + "\n---\n".join(chunks))
+
+            elif qtype == "attribute":
+                # 短文本：直接返回属性值
                 value = self._query_attribute(entity, rel_attr)
                 if value:
                     evidence = value

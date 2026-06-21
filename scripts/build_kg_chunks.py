@@ -38,7 +38,7 @@ MAX_CHUNK = 300        # 单块最大字数
 MIN_CHUNK = 50         # 单块最小字数（过短则合并）
 OVERLAP = 30           # 相邻块首尾重叠字数
 EMBED_BATCH = 64       # 每批 embedding 的 chunk 数
-WRITE_BATCH = 200      # 每批写入 Neo4j 的节点数
+WRITE_BATCH = 50       # 每批写入 Neo4j 的节点数（embedding 数组较大，批次不宜太多）
 EMBEDDING_DIM = 512    # BGE-small-zh-v1.5
 
 # 语义边界正则：换行后紧跟编号/标题
