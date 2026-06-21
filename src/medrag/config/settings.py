@@ -130,6 +130,22 @@ class Settings:
         ("qwen-plus", "qwen-max", "qwen-turbo", "qwen3-235b-a22b"),
     )
 
+    # KG 长属性离线摘要：模型降级链（均经 Qwen/DashScope compatible-mode 调用，
+    # 仅模型名不同；前一个欠费/失败自动降级到下一个）
+    kg_summary_models: tuple[str, ...] = _env_tuple(
+        "KG_SUMMARY_MODELS",
+        ("kimi-k2.5", "kimi-k2.6", "deepseek-v4-flash", "deepseek-v4-pro",
+         "glm-5.1", "qwen3.6-27b", "qwen3.5-flash",
+         "qwen3.6-flash", "deepseek-v3", "glm-5"),
+    )
+    # 原文 ≤ 此字数时不调 LLM：本身够短，直接拿原文作概览（省成本，质量无损）；
+    # 仅 > 此字数才调 LLM 浓缩
+    kg_summary_llm_min: int = _env_int("KG_SUMMARY_LLM_MIN", 600)
+    # 原文超过此字数视为「复杂」，摘要走 400–600 字带机理；否则 200–300 精简概述
+    kg_summary_complex_threshold: int = _env_int("KG_SUMMARY_COMPLEX_THRESHOLD", 600)
+    # 摘要并行线程数（DashScope 有限流，按额度调整）
+    kg_summary_workers: int = _env_int("KG_SUMMARY_WORKERS", 4)
+
     # Ollama
     ollama_base_url: str = _env_str("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     ollama_model: str = _env_str("OLLAMA_MODEL", "qwen3.5:9b")

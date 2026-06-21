@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 from typing import Dict, List, Optional
 
 try:
@@ -24,7 +25,7 @@ except Exception:  # pragma: no cover - optional Neo4j dependency
 
 from medrag.config.settings import settings
 from medrag.llm import get_llm_client
-from medrag.retrieval.intent import recognize_intents
+from medrag.retrieval.intent import extract_focus, recognize_intents
 try:
     from medrag.ner import model as zwk
 except Exception:  # pragma: no cover - optional NER runtime dependency
@@ -69,7 +70,25 @@ _CHUNK_ATTR_MAP = {
     "预防措施": "预防措施",
 }
 
-CHUNK_TOP_K = 3  # 每次从 Chunk 中召回的段落数
+# 各长属性的「属性同义词」：从 query 中剥离掉它们 + 实体名 + 停用词后，
+# 若仍有实质残留，说明用户问的是某个具体细分点（细化型），否则是概括型。
+_ATTR_SYNONYMS = {
+    "疾病病因": ["疾病病因", "病因", "成因", "原因", "诱因", "怎么得", "为什么会",
+               "为什么", "如何引起", "引起", "导致", "怎么会", "怎么引起"],
+    "预防措施": ["预防措施", "预防", "怎么预防", "如何预防", "怎么防", "如何避免",
+               "怎样避免", "防止", "避免"],
+    "疾病简介": ["疾病简介", "简介", "介绍", "是什么病", "是什么", "什么病",
+               "什么是", "是种什么"],
+}
+
+# 停用词/标点/疑问词：残差判定前清洗（疑问词剥掉，避免"什么/哪些"这类
+# 纯概括问法残留 2 字、白白触发一次 LLM focus 调用）
+_STOP_RE = re.compile(
+    r"[的了吗呢啊？?。，,、；;和与及跟是有会要这那一个请问"
+    r"什么哪些几谁怎样如何多少呀嘛\s]+"
+)
+
+CHUNK_TOP_K = 3  # 细化型每次从 detail chunk 中召回的段落数
 
 
 class KGRetriever:
@@ -225,8 +244,64 @@ class KGRetriever:
         return None
 
     # ------------------------------------------------------------------
-    # Chunk 召回：Cypher 精确定位 + 余弦相似度局部排序
+    # 细分点（focus）判定：区分「概括型」与「细化型」query
     # ------------------------------------------------------------------
+
+    def _residual(self, query: str, entity: str, attribute: str) -> str:
+        """扣掉实体名 + 属性同义词 + 停用词后，query 残留的「具体限定词」。"""
+        r = query.replace(entity, "")
+        for syn in _ATTR_SYNONYMS.get(attribute, []):
+            r = r.replace(syn, "")
+        return _STOP_RE.sub("", r)
+
+    def _resolve_focus(self, query: str, entity: str, attribute: str) -> str:
+        """判定用户问的是整体还是某个细分点。
+
+        Returns
+        -------
+        str
+            ``""`` 表示概括型（应返回提纲摘要）；非空表示细化型，返回用于
+            余弦召回的细分点关键词。
+
+        策略：先用正则残差做廉价闸门 —— 残差为空即概括型，**不调 LLM**；
+        残差非空（可能含细分点）时调 ``extract_focus`` 精确抽取，LLM 失败
+        则回退到正则残差本身。
+        """
+        residual = self._residual(query, entity, attribute)
+        if len(residual) < 2:
+            return ""  # 清晰的概括型，省去 LLM 调用
+
+        focus = extract_focus(query, attribute)
+        if focus is None:          # LLM 调用失败 → 正则兜底
+            return residual
+        return focus               # "" 表示 LLM 判定为概括型
+
+    # ------------------------------------------------------------------
+    # Chunk 召回：概括型取提纲摘要，细化型在 detail 块上余弦
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cosine(a: List[float], b: List[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = sum(x * x for x in a) ** 0.5
+        nb = sum(x * x for x in b) ** 0.5
+        return dot / (na * nb + 1e-9)
+
+    def _fetch_summary(self, entity: str, attribute: str) -> Optional[str]:
+        """取概括型用的提纲摘要（level='summary'）。"""
+        cypher = """
+            MATCH (d:疾病 {名称: $entity})-[:HAS_CHUNK]->(c:KGChunk {attribute: $attribute})
+            WHERE c.level = 'summary'
+            RETURN c.text AS text
+            LIMIT 1
+        """
+        try:
+            rows = self.neo4j.run(cypher, entity=entity, attribute=attribute).data()
+            if rows:
+                return rows[0]["text"]
+        except Exception:
+            pass
+        return None
 
     def _query_chunks(
         self,
@@ -235,24 +310,40 @@ class KGRetriever:
         query: str,
         top_k: int = CHUNK_TOP_K,
     ) -> Optional[List[str]]:
-        """Cypher 锁定实体的 Chunk，余弦相似度选出最相关的 top_k 段。
+        """长属性两层召回。
 
-        若 embedding 模型不可用或该实体无 Chunk，降级为返回原始全文属性值。
+        - **概括型**（"糖尿病的病因是什么"）→ 返回离线提纲摘要，长度受控；
+        - **细化型**（"糖尿病和遗传有关吗"）→ 用细分点关键词在 detail 块上
+          余弦召回 top_k 段。
+
+        各分支不可用时逐级降级：摘要缺失 → 全部 detail 块；detail 缺失或无
+        embedding → 直接查原始属性值。
         """
         if self.neo4j is None:
             return None
 
-        # 1. 嵌入查询
+        focus = self._resolve_focus(query, entity, attribute)
+
+        # ---------- 概括型：提纲摘要 ----------
+        if not focus:
+            summary = self._fetch_summary(entity, attribute)
+            if summary:
+                return [summary]
+            # 无摘要（如旧数据未重建）→ 降级返回全部 detail 块
+            return self._fetch_all_details(entity, attribute) \
+                or self._fallback_attr(entity, attribute)
+
+        # ---------- 细化型：detail 块余弦召回 ----------
         query_emb: Optional[List[float]] = None
         if self._embedder is not None:
             try:
-                query_emb = self._embedder.encode_one(query, is_query=True)
+                query_emb = self._embedder.encode_one(focus, is_query=True)
             except Exception:
                 pass
 
-        # 2. 图遍历取出该实体该属性的所有 Chunk
         cypher = """
             MATCH (d:疾病 {名称: $entity})-[:HAS_CHUNK]->(c:KGChunk {attribute: $attribute})
+            WHERE c.level = 'detail' OR c.level IS NULL
             RETURN c.text AS text, c.order AS ord, c.embedding AS emb
             ORDER BY c.order
         """
@@ -262,21 +353,32 @@ class KGRetriever:
             rows = []
 
         if not rows:
-            # 无 Chunk，降级为直接查属性
-            val = self._query_attribute(entity, attribute)
-            return [val] if val else None
+            return self._fallback_attr(entity, attribute)
 
-        # 3. 有查询向量时做余弦排序，否则按 order 顺序取前 top_k
         if query_emb:
-            def _cosine(a: List[float], b: List[float]) -> float:
-                dot = sum(x * y for x, y in zip(a, b))
-                na = sum(x * x for x in a) ** 0.5
-                nb = sum(x * x for x in b) ** 0.5
-                return dot / (na * nb + 1e-9)
-
-            rows.sort(key=lambda r: _cosine(query_emb, r["emb"]), reverse=True)
-
+            rows.sort(key=lambda r: self._cosine(query_emb, r["emb"]), reverse=True)
         return [r["text"] for r in rows[:top_k]]
+
+    def _fetch_all_details(self, entity: str, attribute: str) -> Optional[List[str]]:
+        """按原文顺序返回全部 detail 块（摘要缺失时的降级路径）。"""
+        cypher = """
+            MATCH (d:疾病 {名称: $entity})-[:HAS_CHUNK]->(c:KGChunk {attribute: $attribute})
+            WHERE c.level = 'detail' OR c.level IS NULL
+            RETURN c.text AS text
+            ORDER BY c.order
+        """
+        try:
+            rows = self.neo4j.run(cypher, entity=entity, attribute=attribute).data()
+            if rows:
+                return [r["text"] for r in rows]
+        except Exception:
+            pass
+        return None
+
+    def _fallback_attr(self, entity: str, attribute: str) -> Optional[List[str]]:
+        """最终降级：直接查原始属性全文。"""
+        val = self._query_attribute(entity, attribute)
+        return [val] if val else None
 
     # ------------------------------------------------------------------
     # 公开接口
