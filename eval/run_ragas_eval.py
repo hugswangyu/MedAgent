@@ -37,7 +37,9 @@ def _contexts_from_result(result: dict) -> tuple[list[str], list[str]]:
         answer = item.get("answer", "")
         if isinstance(evidence, list):
             # 关系三元组：evidence 是实体名列表
-            kg_triplets.append(answer or "、".join(str(x) for x in evidence))
+            triplet_text = answer or "、".join(str(x) for x in evidence)
+            kg_triplets.append(triplet_text)
+            ragas_contexts.append(triplet_text)  # 关系数据也送入 RAGAS 上下文
         else:
             # 属性文本：evidence 是字符串段落
             text = answer or str(evidence or "")

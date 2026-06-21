@@ -74,7 +74,7 @@ _api_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_API_KEY",
 _base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 _model_priority = [
     m.strip() for m in os.environ.get(
-        "QWEN_JUDGE_MODELS", "qwen-turbo,qwen-max"
+        "QWEN_JUDGE_MODELS", "qwen-turbo,qwen3.6-flash,qwen-max"
     ).split(",")
 ]
 
@@ -137,7 +137,7 @@ print(f"Running RAGAS evaluation with models: {_model_priority}")
 result = evaluate(
     dataset,
     metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
-    run_config=RunConfig(max_workers=4, timeout=60),
+    run_config=RunConfig(max_workers=2, timeout=90),
 )
 
 import math
