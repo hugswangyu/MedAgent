@@ -54,9 +54,14 @@ class MemorySystem:
         persist_path: Optional[str] = None,
         username: str = "",
     ):
+        self._persist_path = persist_path
+        self._kg_store = kg_store
         self.short_term = ShortTermMemory(max_turns=max_turns)
         self.preferences = PreferenceStore(username=username)
-        self.long_term = LongTermMemory(username=username)
+        self.long_term = LongTermMemory(
+            username=username,
+            persist_path=persist_path,
+        )
         self._consolidation_cfg = consolidation or ConsolidationConfig()
         self.long_term.set_consolidation_config(self._consolidation_cfg)
         self.graph = GraphMemory(self.long_term, kg_store=kg_store)
@@ -160,7 +165,10 @@ class MemorySystem:
                top_k: int = 5,
                filter: Optional[RecallFilter] = None) -> List[MemoryItem]:
         """Recall relevant long-term memories."""
-        return self.graph.recall_by_filter(query, query_embedding, filter)
+        effective_filter = filter or RecallFilter(top_k=top_k, min_score=0.4)
+        return self.graph.recall_by_filter(
+            query, query_embedding, effective_filter,
+        )
 
     # ------------------------------------------------------------------
     # Context building for LLM prompts
@@ -239,9 +247,9 @@ class MemorySystem:
         """Clear all memory layers."""
         username = self.long_term._username
         self.short_term.clear()
-        self.long_term = LongTermMemory(username=username)
+        self.long_term.clear()
         self.long_term.set_consolidation_config(self._consolidation_cfg)
-        self.graph = GraphMemory(self.long_term)
+        self.graph = GraphMemory(self.long_term, kg_store=self._kg_store)
         self.preferences = PreferenceStore(username=username)
         self._msg_count = 0
 
@@ -280,9 +288,15 @@ def get_memory_system() -> MemorySystem:
 
 def create_memory_system(max_turns: int = 5,
                           kg_store=None,
-                          persist_path: Optional[str] = None) -> MemorySystem:
+                          persist_path: Optional[str] = None,
+                          username: str = "") -> MemorySystem:
     """Create a fresh MemorySystem (useful for per-session isolation)."""
-    return MemorySystem(max_turns=max_turns, kg_store=kg_store, persist_path=persist_path)
+    return MemorySystem(
+        max_turns=max_turns,
+        kg_store=kg_store,
+        persist_path=persist_path,
+        username=username,
+    )
 
 
 __all__ = [

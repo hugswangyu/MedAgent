@@ -8,16 +8,19 @@ Key design:
   - FilterByCategory: stable category enumeration (no scoring).
   - Consolidate: decay → dedup+merge → expire, all in-place on self._items.
   - TF-IDF fallback: when no embedding provided, tokenize by Chinese chars + English words.
-  - Persistence: PostgreSQL-backed via postgres_client (``username`` for multi-tenant isolation).
+  - Persistence: local JSON or PostgreSQL (username-scoped multi-tenant storage).
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
+import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -98,6 +101,7 @@ class LongTermMemory:
 
     def __init__(self, username: str = "", persist_path: Optional[str] = None):
         self._username = username
+        self._persist_path = persist_path
         self._items: List[MemoryItem] = []
         self._vocab_id: Dict[str, int] = {}      # token → index
         self._vocab: List[str] = []               # index → token
@@ -106,8 +110,10 @@ class LongTermMemory:
         self._consolidation_cfg: Optional[ConsolidationConfig] = None
         self._content_hashes: Set[str] = set()    # Hash-based exact dedup (stage 1)
 
-        # ── Auto-load from PostgreSQL ──
-        self._load_from_pg()
+        if self._persist_path:
+            self._load_from_json()
+        else:
+            self._load_from_pg()
 
     # ------------------------------------------------------------------
     # Config
@@ -538,6 +544,84 @@ class LongTermMemory:
             "last_accessed": item.last_accessed.isoformat() if item.last_accessed else None,
         }
 
+    def _item_to_json(self, item: MemoryItem) -> dict:
+        row = self._item_to_pg_row(item)
+        row["id"] = item.id
+        return row
+
+    def _load_from_json(self) -> None:
+        """Load memory items from the configured local JSON file."""
+        path = Path(self._persist_path)
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            rows = payload.get("items", []) if isinstance(payload, dict) else payload
+            for row in rows:
+                embedding = row.get("embedding")
+                created = row.get("created_at")
+                accessed = row.get("last_accessed")
+                item = MemoryItem(
+                    id=int(row.get("id", self._next_id)),
+                    content=str(row.get("content", "")),
+                    importance=float(row.get("importance", 0.5)),
+                    embedding=(
+                        np.array(embedding, dtype=np.float64)
+                        if embedding is not None else None
+                    ),
+                    category=row.get("category", "general"),
+                    tags=list(row.get("tags") or []),
+                    slot_hint=row.get("slot_hint", ""),
+                    created_at=(datetime.fromisoformat(created) if created else None),
+                    last_accessed=(
+                        datetime.fromisoformat(accessed) if accessed else None
+                    ),
+                )
+                self._items.append(item)
+                self._build_vocab(item.content)
+                self._content_hashes.add(self._hash(item.content))
+            self._next_id = (
+                max(item.id for item in self._items) + 1 if self._items else 0
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load memory JSON from %s",
+                self._persist_path,
+                exc_info=True,
+            )
+
+    def _save_to_json(self) -> None:
+        """Atomically persist the complete local memory snapshot."""
+        path = Path(self._persist_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(path.name + ".tmp")
+        payload = {"items": [self._item_to_json(item) for item in self._items]}
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temp_path, path)
+
+    def clear(self) -> None:
+        """Clear in-memory state and its configured persistence backend."""
+        ids = [item.id for item in self._items if item.id >= 0]
+        self._items.clear()
+        self._vocab_id.clear()
+        self._vocab.clear()
+        self._content_hashes.clear()
+        self._next_id = 0
+        self._store_count = 0
+
+        if self._persist_path:
+            self._save_to_json()
+        elif self._username and ids:
+            try:
+                from medrag.infrastructure.storage.postgres_client import ltm_delete_items
+                ltm_delete_items(ids)
+            except Exception:
+                logger.debug("Failed to clear LTM for user %s", self._username, exc_info=True)
+
+
     def _pg_item_id(self, item: MemoryItem) -> Optional[int]:
         """Return the PG-assigned id stored in item.id post-sync."""
         return item.id if hasattr(item, "id") and item.id >= 0 else None
@@ -581,6 +665,16 @@ class LongTermMemory:
 
     def _auto_save(self) -> None:
         """After every store operation, sync the latest item to PostgreSQL."""
+        if self._persist_path:
+            try:
+                self._save_to_json()
+            except Exception:
+                logger.warning(
+                    "LTM JSON auto-save failed for %s",
+                    self._persist_path,
+                    exc_info=True,
+                )
+            return
         if not self._username or not self._items:
             return
         try:
@@ -607,6 +701,17 @@ class LongTermMemory:
 
     def _sync_consolidation_to_pg(self, result: ConsolidationResult) -> None:
         """After consolidation, sync deletions and updates to PostgreSQL."""
+        if self._persist_path:
+            try:
+                self._save_to_json()
+            except Exception:
+                logger.warning(
+                    "Failed to sync consolidated memory JSON to %s",
+                    self._persist_path,
+                    exc_info=True,
+                )
+            return
+
         if not self._username:
             return
         try:

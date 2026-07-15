@@ -125,7 +125,10 @@ class HarnessOrchestrator:
         if self.react_engine_builder:
             try:
                 engine = self.react_engine_builder(query, result.get("route", {}))
-                engine_result = engine.run(query, system_context="")
+                engine_result = engine.run(
+                    query,
+                    system_context=context.get("system_context", ""),
+                )
                 result["answer"] = engine_result.get("answer", "")
                 result["react_trace"] = {
                     "steps": engine_result.get("steps", []),

@@ -77,6 +77,7 @@ async def chat_stream(
             for event in service.stream_chat(
                 query=body.message,
                 username=current_user.username,
+                session_id=body.session_id,
                 department=department,
                 provider=body.provider,
                 model=body.model,

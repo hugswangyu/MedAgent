@@ -40,12 +40,20 @@ class RetrieveKnowledgeTool:
         prompt_builder: Any = None,
         top_k: int = 5,
         max_results: int = 5,
+        username: Optional[str] = None,
+        department: Optional[str] = None,
+        route: Optional[Dict] = None,
+        trace_context: Optional[Dict] = None,
     ):
         self._retriever = hybrid_retriever
         self._reranker = reranker
         self._prompt_builder = prompt_builder
         self._top_k = top_k
         self._max_results = max_results
+        self._username = username
+        self._department = department
+        self._route = route
+        self._trace_context = trace_context
 
     def execute(self, query: str) -> str:
         """执行完整 RAG pipeline，返回格式化文本。
@@ -58,12 +66,18 @@ class RetrieveKnowledgeTool:
             空结果时返回 "未找到相关信息。"。
         """
         try:
-            retrieval = self._retriever.retrieve(query)
+            retrieval = self._retriever.retrieve(
+                query,
+                department=self._department,
+                username=self._username,
+                route=self._route,
+            )
         except Exception as exc:
             return f'[status=error] 检索系统异常：{exc}。请勿重试此工具，直接告知用户无法获取信息。'
 
         kg_results = retrieval.get("kg_results", [])
         qa_results = retrieval.get("qa_results", [])
+        case_results = retrieval.get("case_results", [])
 
         # 重排 QA 结果
         if qa_results:
@@ -72,25 +86,54 @@ class RetrieveKnowledgeTool:
             except Exception:
                 qa_results = qa_results[:self._top_k]
 
-        # 缓存检索结果供 stream_chat() trace 使用，避免重复检索
-        self._retriever._last_raw_result = retrieval
-        self._retriever._last_reranked_qa = qa_results
+        # 请求级 trace 容器，避免把临时结果写入共享 Retriever。
+        if self._trace_context is not None:
+            self._trace_context["raw_result"] = retrieval
+            self._trace_context["reranked_qa"] = qa_results
 
         parts: List[str] = []
 
-        if kg_results:
-            parts.append("【知识图谱结果】")
-            for r in kg_results[:self._max_results]:
-                content = r.get("answer") or r.get("text") or str(r)
-                parts.append(f"- {content[:500]}")
-            parts.append("")
+        # 复用统一的 RAG 章节构建规则。这里返回的是 Observation，
+        # 历史内容只作为事实资料，不作为可执行指令。
+        if self._prompt_builder is not None:
+            try:
+                sections = self._prompt_builder.build_sections(
+                    query=query,
+                    kg_results=kg_results,
+                    qa_results=qa_results,
+                    case_results=case_results,
+                    route=retrieval.get("route"),
+                    query_info=retrieval.get("query_info"),
+                )
+                parts = [
+                    sections[key]
+                    for key in ("case_chunks", "kg", "qa")
+                    if sections.get(key)
+                ]
+            except Exception:
+                parts = []
 
-        if qa_results:
-            parts.append("【相似问答结果】")
-            for r in qa_results[:self._max_results]:
-                content = r.get("answer") or r.get("text") or str(r)
-                parts.append(f"- {content[:500]}")
-            parts.append("")
+        if not parts:
+            if case_results:
+                parts.append("【用户病例片段】")
+                for r in case_results[:self._max_results]:
+                    content = r.get("answer") or r.get("text") or str(r)
+                    parts.append(f"- {content[:500]}")
+                parts.append("")
+
+            if kg_results:
+                parts.append("【知识图谱结果】")
+                for r in kg_results[:self._max_results]:
+                    content = r.get("answer") or r.get("text") or str(r)
+                    parts.append(f"- {content[:500]}")
+                parts.append("")
+
+            if qa_results:
+                parts.append("【相似问答结果】")
+                for r in qa_results[:self._max_results]:
+                    content = r.get("answer") or r.get("text") or str(r)
+                    parts.append(f"- {content[:500]}")
+                parts.append("")
 
         if not parts:
             return "[status=not_found] 检索完成，但知识库中无匹配文档。可尝试换用不同关键词，或直接告知用户信息不足。"
