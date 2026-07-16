@@ -93,13 +93,7 @@ def add_document(
     summary: str = "",
     status: str = "ready",
 ) -> None:
-    docs = _read_docs()
-    # 去重
-    docs = [
-        d for d in docs
-        if not (d.get("filename") == filename and d.get("username", "") == username)
-    ]
-    docs.append({
+    document = {
         "filename": filename,
         "file_type": file_type,
         "chunk_count": chunk_count,
@@ -108,23 +102,35 @@ def add_document(
         "summary": summary,
         "status": status,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
-    })
-    _doc_store.write(docs)
+    }
+
+    def add(docs: dict | list) -> None:
+        if not isinstance(docs, list):
+            raise TypeError("document index must contain a JSON list")
+        docs[:] = [
+            d for d in docs
+            if not (d.get("filename") == filename and d.get("username", "") == username)
+        ]
+        docs.append(document)
+
+    _doc_store.update(add, default_factory=list)
 
 
 def remove_document(filename: str, username: str | None = None) -> bool:
-    docs = _read_docs()
-    filtered = [
-        d for d in docs
-        if not (
-            d.get("filename") == filename
-            and (username is None or d.get("username") == username)
-        )
-    ]
-    if len(filtered) == len(docs):
-        return False
-    _doc_store.write(filtered)
-    return True
+    def remove(docs: dict | list) -> bool:
+        if not isinstance(docs, list):
+            raise TypeError("document index must contain a JSON list")
+        original_count = len(docs)
+        docs[:] = [
+            d for d in docs
+            if not (
+                d.get("filename") == filename
+                and (username is None or d.get("username") == username)
+            )
+        ]
+        return len(docs) != original_count
+
+    return _doc_store.update(remove, default_factory=list)
 
 
 def get_document_by_filename(filename: str, username: str | None = None) -> Optional[dict]:

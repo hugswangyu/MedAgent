@@ -36,36 +36,42 @@ def add_user_case(
 ) -> str:
     """新增或替换用户病例记录，返回 document_id。"""
     doc_id = document_id or str(uuid.uuid4())
-    cases = [
-        c for c in _read_cases()
-        if not (c.get("username") == username and c.get("filename") == filename)
-    ]
-    cases.append(
-        {
-            "username": username,
-            "document_id": doc_id,
-            "filename": filename,
-            "summary": summary,
-            "chunks": chunks,
-            "chunk_count": len(chunks),
-            "status": status,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-    _write_cases(cases)
+    case = {
+        "username": username,
+        "document_id": doc_id,
+        "filename": filename,
+        "summary": summary,
+        "chunks": chunks,
+        "chunk_count": len(chunks),
+        "status": status,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    def add(cases: dict | list) -> None:
+        if not isinstance(cases, list):
+            raise TypeError("user case index must contain a JSON list")
+        cases[:] = [
+            c for c in cases
+            if not (c.get("username") == username and c.get("filename") == filename)
+        ]
+        cases.append(case)
+
+    _case_store.update(add, default_factory=list)
     return doc_id
 
 
 def remove_user_case(username: str, filename: str) -> bool:
-    cases = _read_cases()
-    filtered = [
-        c for c in cases
-        if not (c.get("username") == username and c.get("filename") == filename)
-    ]
-    if len(filtered) == len(cases):
-        return False
-    _write_cases(filtered)
-    return True
+    def remove(cases: dict | list) -> bool:
+        if not isinstance(cases, list):
+            raise TypeError("user case index must contain a JSON list")
+        original_count = len(cases)
+        cases[:] = [
+            c for c in cases
+            if not (c.get("username") == username and c.get("filename") == filename)
+        ]
+        return len(cases) != original_count
+
+    return _case_store.update(remove, default_factory=list)
 
 
 def get_user_cases(username: str) -> list[dict]:
