@@ -34,19 +34,25 @@ def add_message(
     username: str = "",
 ) -> None:
     """向会话追加一条消息。"""
+    if not username:
+        raise ValueError("username is required for session writes")
+
     # Ensure session exists
-    existing = _pg_session_get(session_id)
+    existing = _pg_session_get(session_id, username)
     if existing is None:
-        _pg_session_save(session_id, username)
+        if not _pg_session_save(session_id, username):
+            raise PermissionError("session belongs to another user")
         msg_count = 1
     else:
         msg_count = existing.get("message_count", 0) + 1
 
-    _pg_message_add(session_id, msg_type, content, rag_trace)
-    _pg_session_update(session_id, msg_count)
+    if not _pg_message_add(session_id, username, msg_type, content, rag_trace):
+        raise PermissionError("session belongs to another user")
+    if not _pg_session_update(session_id, username, msg_count):
+        raise PermissionError("session belongs to another user")
 
 
-def get_sessions(username: str = "") -> List[SessionSummary]:
+def get_sessions(username: str) -> List[SessionSummary]:
     rows = _pg_session_list(username)
     result = []
     for r in rows:
@@ -63,11 +69,11 @@ def get_sessions(username: str = "") -> List[SessionSummary]:
     return result
 
 
-def get_session(session_id: str) -> Optional[SessionDetailResponse]:
-    rows = _pg_session_get(session_id)
+def get_session(session_id: str, username: str) -> Optional[SessionDetailResponse]:
+    rows = _pg_session_get(session_id, username)
     if rows is None:
         return None
-    msgs = _pg_message_list(session_id)
+    msgs = _pg_message_list(session_id, username)
     return SessionDetailResponse(
         session_id=session_id,
         messages=[
@@ -81,9 +87,5 @@ def get_session(session_id: str) -> Optional[SessionDetailResponse]:
     )
 
 
-def delete_session(session_id: str) -> bool:
-    existing = _pg_session_get(session_id)
-    if existing is None:
-        return False
-    _pg_session_delete(session_id)
-    return True
+def delete_session(session_id: str, username: str) -> bool:
+    return _pg_session_delete(session_id, username)

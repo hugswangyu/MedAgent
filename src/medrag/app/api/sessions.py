@@ -17,7 +17,7 @@ async def list_sessions(current_user=Depends(get_current_user)):
 
 @router.get("/{session_id}", response_model=SessionDetailResponse)
 async def load_session(session_id: str, current_user=Depends(get_current_user)):
-    session = get_session(session_id)
+    session = get_session(session_id, username=current_user.username)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
     return session
@@ -25,7 +25,7 @@ async def load_session(session_id: str, current_user=Depends(get_current_user)):
 
 @router.delete("/{session_id}", response_model=MessageResponse)
 async def remove_session(session_id: str, current_user=Depends(get_current_user)):
-    ok = delete_session(session_id)
+    ok = delete_session(session_id, username=current_user.username)
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
     return MessageResponse(message=f"已删除会话 {session_id}")

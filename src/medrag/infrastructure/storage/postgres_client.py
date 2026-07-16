@@ -167,7 +167,7 @@ def ltm_recall(username: str, category_filter: Optional[List[str]] = None) -> Li
 
 def session_save(
     session_id: str, username: str, title: str = "新对话"
-) -> None:
+) -> bool:
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -178,15 +178,28 @@ def session_save(
             """,
             (session_id, username, title),
         )
+        if cur.rowcount > 0:
+            return True
+        cur.execute(
+            "SELECT 1 FROM chat_sessions WHERE session_id = %s AND username = %s",
+            (session_id, username),
+        )
+        return cur.fetchone() is not None
 
 
-def session_update(session_id: str, message_count: int) -> None:
+
+def session_update(session_id: str, username: str, message_count: int) -> bool:
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "UPDATE chat_sessions SET message_count = %s, updated_at = NOW() WHERE session_id = %s",
-            (message_count, session_id),
+            """
+            UPDATE chat_sessions
+            SET message_count = %s, updated_at = NOW()
+            WHERE session_id = %s AND username = %s
+            """,
+            (message_count, session_id, username),
         )
+        return cur.rowcount > 0
 
 
 def session_list(username: str) -> List[Dict]:
@@ -204,47 +217,66 @@ def session_list(username: str) -> List[Dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
-def session_get(session_id: str) -> Optional[Dict]:
+def session_get(session_id: str, username: str) -> Optional[Dict]:
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            "SELECT * FROM chat_sessions WHERE session_id = %s", (session_id,)
+            "SELECT * FROM chat_sessions WHERE session_id = %s AND username = %s",
+            (session_id, username),
         )
         r = cur.fetchone()
         return dict(r) if r else None
 
 
-def session_delete(session_id: str) -> None:
+def session_delete(session_id: str, username: str) -> bool:
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("DELETE FROM chat_sessions WHERE session_id = %s", (session_id,))
+        cur.execute(
+            "DELETE FROM chat_sessions WHERE session_id = %s AND username = %s",
+            (session_id, username),
+        )
+        return cur.rowcount > 0
 
 
 def message_add(
-    session_id: str, msg_type: str, content: str, rag_trace: Optional[Dict] = None
-) -> None:
+    session_id: str,
+    username: str,
+    msg_type: str,
+    content: str,
+    rag_trace: Optional[Dict] = None,
+) -> bool:
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO session_messages (session_id, msg_type, content, rag_trace)
-            VALUES (%s, %s, %s, %s)
+            SELECT session_id, %s, %s, %s
+            FROM chat_sessions
+            WHERE session_id = %s AND username = %s
             """,
-            (session_id, msg_type, content, json.dumps(rag_trace) if rag_trace else None),
+            (
+                msg_type,
+                content,
+                json.dumps(rag_trace) if rag_trace else None,
+                session_id,
+                username,
+            ),
         )
+        return cur.rowcount > 0
 
 
-def message_list(session_id: str) -> List[Dict]:
+def message_list(session_id: str, username: str) -> List[Dict]:
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             """
-            SELECT msg_type, content, rag_trace, created_at
-            FROM session_messages
-            WHERE session_id = %s
-            ORDER BY id
+            SELECT m.msg_type, m.content, m.rag_trace, m.created_at
+            FROM session_messages AS m
+            JOIN chat_sessions AS s ON s.session_id = m.session_id
+            WHERE m.session_id = %s AND s.username = %s
+            ORDER BY m.id
             """,
-            (session_id,),
+            (session_id, username),
         )
         return [dict(r) for r in cur.fetchall()]
 

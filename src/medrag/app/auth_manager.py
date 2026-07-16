@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 import bcrypt
@@ -24,7 +24,9 @@ from medrag.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "medrag-dev-secret-change-me")
+DEFAULT_DEV_SECRET_KEY = "medrag-dev-secret-change-me"
+SUPPORTED_ENVIRONMENTS = frozenset({"dev", "test", "prod"})
+MIN_PRODUCTION_SECRET_LENGTH = 32
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 天
 
@@ -36,6 +38,57 @@ class AuthUser:
     """轻量级认证用户视图（不暴露密码）。"""
     username: str
     is_admin: bool = False
+
+
+@dataclass(frozen=True)
+class AuthConfig:
+    """Validated authentication settings. The secret must never be logged."""
+
+    environment: str
+    secret_key: str
+
+
+def load_auth_config(
+    environment: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> AuthConfig:
+    """Load and validate authentication settings.
+
+    dev and test retain a compatible local default. prod requires an explicit
+    JWT_SECRET_KEY of at least 32 characters that differs from the default.
+    """
+    raw_environment = (
+        environment if environment is not None else os.getenv("MEDRAG_ENV", "dev")
+    )
+    normalized_environment = raw_environment.strip().lower()
+    if normalized_environment not in SUPPORTED_ENVIRONMENTS:
+        supported = ", ".join(sorted(SUPPORTED_ENVIRONMENTS))
+        raise RuntimeError(
+            f"Invalid MEDRAG_ENV={raw_environment!r}; supported values: {supported}"
+        )
+
+    configured_secret = (
+        secret_key if secret_key is not None else os.getenv("JWT_SECRET_KEY", "")
+    )
+    configured_secret = configured_secret.strip()
+
+    if normalized_environment == "prod":
+        if not configured_secret:
+            raise RuntimeError("JWT_SECRET_KEY is required when MEDRAG_ENV=prod")
+        if configured_secret == DEFAULT_DEV_SECRET_KEY:
+            raise RuntimeError("The default development JWT secret is forbidden in prod")
+        if len(configured_secret) < MIN_PRODUCTION_SECRET_LENGTH:
+            raise RuntimeError(
+                f"JWT_SECRET_KEY must contain at least {MIN_PRODUCTION_SECRET_LENGTH} characters in prod"
+            )
+
+    effective_secret = configured_secret or DEFAULT_DEV_SECRET_KEY
+    logger.info(
+        "Authentication configuration validated: environment=%s, jwt_secret=%s",
+        normalized_environment,
+        "configured" if configured_secret else "not configured (development default)",
+    )
+    return AuthConfig(normalized_environment, effective_secret)
 
 
 # ---------------------------------------------------------------------------
@@ -54,15 +107,22 @@ def verify_password(plain: str, hashed: str) -> bool:
 # JWT
 # ---------------------------------------------------------------------------
 
-def create_access_token(username: str) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+def create_access_token(
+    username: str,
+    expires_delta: Optional[timedelta] = None,
+) -> str:
+    config = load_auth_config()
+    expire = datetime.now(timezone.utc) + (
+        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
     payload = {"sub": username, "exp": expire}
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, config.secret_key, algorithm=ALGORITHM)
 
 
 def decode_access_token(token: str) -> Optional[dict]:
+    config = load_auth_config()
     try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return jwt.decode(token, config.secret_key, algorithms=[ALGORITHM])
     except JWTError:
         return None
 
@@ -111,6 +171,8 @@ def create_user(username: str, password: str, is_admin: bool = False) -> Optiona
 
 def init_auth() -> None:
     """加载用户数据，迁移明文密码 → bcrypt。"""
+    # Validate before touching user data or creating a development account.
+    load_auth_config()
     creds = load_credentials(_STORAGE_FILE)
     changed = False
     for name, user in list(creds.items()):
