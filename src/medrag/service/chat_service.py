@@ -136,19 +136,24 @@ class MedicalChatService:
         else:
             self.memory = get_memory_system()
 
+        # ---- Native tool registry (lazy to avoid circular imports) ----
+        self._tool_registry = None
+        self._tool_registry_lock = threading.Lock()
+
     # ------------------------------------------------------------------
     # 公开 API
     # ------------------------------------------------------------------
 
-    # 延迟导入，避免循环依赖
-    _tools_checked = False
-
     def _get_tool_registry(self):
-        if not self._tools_checked:
-            from medrag.tools import get_tool_registry
-            self._tool_registry = get_tool_registry()
-            type(self)._tools_checked = True
-        return self._tool_registry
+        registry = self._tool_registry
+        if registry is None:
+            with self._tool_registry_lock:
+                registry = self._tool_registry
+                if registry is None:
+                    from medrag.tools import get_tool_registry
+                    registry = get_tool_registry()
+                    self._tool_registry = registry
+        return registry
 
     def _get_query_embedding(self, query: str):
         """Try to extract query embedding from the QA retriever for memory storage.
