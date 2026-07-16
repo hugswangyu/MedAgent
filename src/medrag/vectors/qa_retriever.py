@@ -12,6 +12,12 @@ from medrag.vectors.embedding import EmbeddingModel
 from medrag.vectors.milvus_client import MilvusClientWrapper
 
 logger = logging.getLogger(__name__)
+PUBLIC_QA_SOURCE = "cmedqa2"
+
+
+def _escape_milvus_string(value: str) -> str:
+    """Escape a value before embedding it in a Milvus string literal."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 class QARetriever:
@@ -51,16 +57,35 @@ class QARetriever:
             raise RuntimeError("QARetriever unavailable (embedding model not loaded)")
 
         query_embedding = self.embedding_model.encode_one(query, is_query=True)
-        expr = f'department == "{department}"' if department else None
+        expr_parts = [f'source == "{PUBLIC_QA_SOURCE}"']
+        if department:
+            safe_department = _escape_milvus_string(department)
+            expr_parts.append(f'department == "{safe_department}"')
+        expr = " and ".join(expr_parts)
 
-        hits = self._milvus.search(query_embedding, top_k, expr=expr)
+        hits = self._milvus.search(
+            query_embedding,
+            top_k,
+            expr=expr,
+            output_fields=[
+                "pk",
+                "department",
+                "title",
+                "question",
+                "answer",
+                "text",
+                "source",
+            ],
+        )
 
         results: List[Dict] = []
         for hit in hits:
             entity = hit.get("entity", {})
+            if entity.get("source") != PUBLIC_QA_SOURCE:
+                continue
             results.append(
                 {
-                    "source": "cmedqa2",
+                    "source": PUBLIC_QA_SOURCE,
                     "id": entity.get("pk") or hit.get("id", ""),
                     "score": float(hit.get("distance", 0)),
                     "department": entity.get("department") or "",

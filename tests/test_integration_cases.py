@@ -82,10 +82,9 @@ class TestUploadPipeline:
         args, kwargs = mock_add_document.call_args
         assert kwargs["username"] == "testuser"
         assert kwargs["document_id"] is not None
-        # verify milvus insert was called
-        mock_client_instance.insert_batch.assert_called_once()
-        # verify milvus flush was called
-        mock_client_instance.flush.assert_called_once()
+        # Private cases must never be written to the public Milvus collection.
+        mock_embedding_model.assert_not_called()
+        mock_milvus_client.assert_not_called()
 
     def test_split_text_basic(self):
         """验证基本文本分块逻辑。"""
@@ -218,7 +217,7 @@ class TestDeletePipeline:
         mock_remove_case = MagicMock()
 
         with _patch("medrag.vectors.milvus_client.MilvusClientWrapper",
-                     return_value=mock_client), \
+                    return_value=mock_client) as mock_milvus_wrapper, \
              _patch("medrag.app.api.documents.os.path.isdir", mock_isdir), \
              _patch("medrag.app.api.documents.os.listdir", mock_listdir), \
              _patch("medrag.app.api.documents.os.remove", mock_remove), \
@@ -226,10 +225,9 @@ class TestDeletePipeline:
              _patch("medrag.app.api.documents.remove_user_case", mock_remove_case):
             _run_delete_job("del-job-1", "report.txt", "testuser")
 
-        # 1. Milvus 应删除 source == filename 的数据
-        mock_collection.delete.assert_called_once()
-        delete_call = mock_collection.delete.call_args[0][0]
-        assert "report.txt" in delete_call
+        # Private case deletion must never touch the public Milvus collection.
+        mock_milvus_wrapper.assert_not_called()
+        mock_collection.delete.assert_not_called()
 
         # 2. remove_document 被调用
         mock_remove_doc.assert_called_once_with("report.txt", username="testuser")
@@ -338,3 +336,43 @@ class TestNoForcedCaseReference:
 
         # 应显示空占位，不应有实际病例内容
         assert "（此部分暂无可用资料）" in prompt
+
+
+class TestPublicQASourceWhitelist:
+    def test_public_qa_filters_source_and_escapes_department(self):
+        from medrag.vectors.qa_retriever import QARetriever
+
+        retriever = QARetriever.__new__(QARetriever)
+        retriever._available = True
+        retriever.embedding_model = MagicMock()
+        retriever.embedding_model.encode_one.return_value = [0.1, 0.2]
+        retriever._milvus = MagicMock()
+        retriever._milvus.search.return_value = [
+            {
+                "id": "public",
+                "distance": 0.9,
+                "entity": {
+                    "pk": "public",
+                    "source": "cmedqa2",
+                    "answer": "public answer",
+                },
+            },
+            {
+                "id": "private",
+                "distance": 0.99,
+                "entity": {
+                    "pk": "private",
+                    "source": "private-report.pdf",
+                    "answer": "private case",
+                },
+            },
+        ]
+
+        department = 'cardiology" or source != "cmedqa2'
+        results = retriever.search("query", top_k=5, department=department)
+
+        expr = retriever._milvus.search.call_args.kwargs["expr"]
+        assert 'source == "cmedqa2"' in expr
+        assert "source" in retriever._milvus.search.call_args.kwargs["output_fields"]
+        assert 'department == "cardiology\\" or source != \\"cmedqa2"' in expr
+        assert [result["id"] for result in results] == ["public"]

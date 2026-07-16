@@ -61,7 +61,6 @@ def _create_upload_steps():
         {"key": "cleanup", "label": "清理旧版本", "percent": 0, "status": "pending", "message": ""},
         {"key": "parse", "label": "解析与分块", "percent": 0, "status": "pending", "message": ""},
         {"key": "parent_store", "label": "父级分块入库", "percent": 0, "status": "pending", "message": ""},
-        {"key": "vector_store", "label": "向量化入库", "percent": 0, "status": "pending", "message": ""},
     ]
 
 
@@ -116,46 +115,6 @@ def _run_upload_job(job_id: str, file_bytes: bytes, original_filename: str, user
             document_id=document_id,
         )
         update_job_step(job_id, "parent_store", 100, "completed", f"个人病例索引 {len(chunks)} 条")
-
-        # Step: vector_store
-        update_job_step(job_id, "vector_store", 10, "running", f"正在向量化 {len(chunks)} 个文本块...")
-        try:
-            from medrag.vectors.embedding import EmbeddingModel
-            from medrag.vectors.milvus_client import MilvusClientWrapper
-
-            model = EmbeddingModel()
-            client = MilvusClientWrapper()
-            client.connect()
-            client.load_collection()
-
-            # 逐批嵌入并插入
-            batch_size = 32
-            total = len(chunks)
-            for i in range(0, total, batch_size):
-                batch = chunks[i:i + batch_size]
-                vectors = model.encode(batch)
-                docs = []
-                for j, text in enumerate(batch):
-                    docs.append({
-                        "pk": str(uuid.uuid4()),
-                        "department": "",
-                        "title": original_filename,
-                        "question": "",
-                        "answer": text,
-                        "text": text,
-                        "source": original_filename,
-                    })
-                client.insert_batch(docs, vectors)
-                pct = min(100, int(10 + (i + len(batch)) / total * 90))
-                update_job_step(job_id, "vector_store", pct, "running",
-                                f"向量化入库 {min(i + len(batch), total)}/{total}")
-
-            client.flush()
-            update_job_step(job_id, "vector_store", 100, "completed", f"向量化入库完成，{total} 条")
-
-        except Exception as exc:
-            logger.warning("向量库不可用，跳过向量化：%s", exc)
-            update_job_step(job_id, "vector_store", 100, "completed", f"跳过（向量库不可用：{exc}）")
 
         # 更新索引
         add_document(
@@ -252,7 +211,6 @@ def _create_delete_steps():
     return [
         {"key": "prepare", "label": "准备删除", "percent": 0, "status": "pending", "message": ""},
         {"key": "bm25", "label": "同步 BM25 统计", "percent": 0, "status": "pending", "message": ""},
-        {"key": "milvus", "label": "删除向量数据", "percent": 0, "status": "pending", "message": ""},
         {"key": "parent_store", "label": "删除父级分块", "percent": 0, "status": "pending", "message": ""},
     ]
 
@@ -263,20 +221,6 @@ def _run_delete_job(job_id: str, filename: str, username: str):
     try:
         update_job_step(job_id, "prepare", 100, "completed", "准备就绪")
         update_job_step(job_id, "bm25", 100, "completed", "BM25 已同步")
-        update_job_step(job_id, "milvus", 50, "running", "正在删除向量数据...")
-
-        # 尝试从 Milvus 删除
-        try:
-            from medrag.vectors.milvus_client import MilvusClientWrapper
-            client = MilvusClientWrapper()
-            client.connect()
-            client.load_collection()
-            client.collection.delete(f'source == "{filename}"')
-            update_job_step(job_id, "milvus", 100, "completed", "向量数据已删除")
-        except Exception as exc:
-            logger.warning("Milvus 删除失败：%s", exc)
-            update_job_step(job_id, "milvus", 100, "completed", f"跳过（Milvus: {exc}）")
-
         update_job_step(job_id, "parent_store", 50, "running", "正在更新索引...")
         remove_document(filename, username=username)
         remove_user_case(username, filename)
