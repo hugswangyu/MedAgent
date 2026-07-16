@@ -376,3 +376,42 @@ class TestPublicQASourceWhitelist:
         assert "source" in retriever._milvus.search.call_args.kwargs["output_fields"]
         assert 'department == "cardiology\\" or source != \\"cmedqa2"' in expr
         assert [result["id"] for result in results] == ["public"]
+
+
+class TestLegacyDocumentIsolation:
+    def test_document_without_username_is_hidden_and_preserved(
+        self, tmp_path, monkeypatch
+    ):
+        from medrag.app import document_store
+
+        store_path = tmp_path / "legacy_docs_index.json"
+        store = document_store.JsonStore(str(store_path))
+        store.write(
+            [
+                {
+                    "filename": "legacy.pdf",
+                    "file_type": "PDF",
+                    "chunk_count": 1,
+                },
+                {
+                    "filename": "owned.pdf",
+                    "file_type": "PDF",
+                    "chunk_count": 1,
+                    "username": "alice",
+                },
+            ]
+        )
+        monkeypatch.setattr(document_store, "_doc_store", store)
+
+        visible = document_store.get_documents(username="alice")
+
+        assert [document.filename for document in visible] == ["owned.pdf"]
+        assert (
+            document_store.get_document_by_filename("legacy.pdf", username="alice")
+            is None
+        )
+        assert document_store.remove_document("legacy.pdf", username="alice") is False
+        assert [doc["filename"] for doc in document_store._read_docs()] == [
+            "legacy.pdf",
+            "owned.pdf",
+        ]

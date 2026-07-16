@@ -68,7 +68,7 @@ def _read_docs() -> list[dict]:
 def get_documents(username: str | None = None) -> List[DocumentItem]:
     docs = _read_docs()
     if username is not None:
-        docs = [d for d in docs if d.get("username", username) == username]
+        docs = [d for d in docs if d.get("username") == username]
     return [
         DocumentItem(
             filename=d["filename"],
@@ -118,7 +118,7 @@ def remove_document(filename: str, username: str | None = None) -> bool:
         d for d in docs
         if not (
             d.get("filename") == filename
-            and (username is None or d.get("username", username) == username)
+            and (username is None or d.get("username") == username)
         )
     ]
     if len(filtered) == len(docs):
@@ -129,6 +129,6 @@ def remove_document(filename: str, username: str | None = None) -> bool:
 
 def get_document_by_filename(filename: str, username: str | None = None) -> Optional[dict]:
     for d in _read_docs():
-        if d.get("filename") == filename and (username is None or d.get("username", username) == username):
+        if d.get("filename") == filename and (username is None or d.get("username") == username):
             return d
     return None
