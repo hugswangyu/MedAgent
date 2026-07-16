@@ -46,11 +46,13 @@ class AuthConfig:
 
     environment: str
     secret_key: str
+    allow_public_registration: bool
 
 
 def load_auth_config(
     environment: Optional[str] = None,
     secret_key: Optional[str] = None,
+    allow_public_registration: Optional[bool | str] = None,
 ) -> AuthConfig:
     """Load and validate authentication settings.
 
@@ -82,13 +84,43 @@ def load_auth_config(
                 f"JWT_SECRET_KEY must contain at least {MIN_PRODUCTION_SECRET_LENGTH} characters in prod"
             )
 
+    registration_value = (
+        allow_public_registration
+        if allow_public_registration is not None
+        else os.getenv("ALLOW_PUBLIC_REGISTRATION")
+    )
+    if registration_value is None or str(registration_value).strip() == "":
+        registration_enabled = normalized_environment != "prod"
+    elif isinstance(registration_value, bool):
+        registration_enabled = registration_value
+    else:
+        normalized_registration = registration_value.strip().lower()
+        if normalized_registration in {"1", "true", "yes", "on"}:
+            registration_enabled = True
+        elif normalized_registration in {"0", "false", "no", "off"}:
+            registration_enabled = False
+        else:
+            raise RuntimeError(
+                "ALLOW_PUBLIC_REGISTRATION must be a boolean value"
+            )
+
     effective_secret = configured_secret or DEFAULT_DEV_SECRET_KEY
     logger.info(
-        "Authentication configuration validated: environment=%s, jwt_secret=%s",
+        "Authentication configuration validated: environment=%s, jwt_secret=%s, public_registration=%s",
         normalized_environment,
         "configured" if configured_secret else "not configured (development default)",
+        "enabled" if registration_enabled else "disabled",
     )
-    return AuthConfig(normalized_environment, effective_secret)
+    return AuthConfig(
+        normalized_environment,
+        effective_secret,
+        registration_enabled,
+    )
+
+
+def is_public_registration_enabled() -> bool:
+    """Return whether the unauthenticated registration endpoint is enabled."""
+    return load_auth_config().allow_public_registration
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +203,7 @@ def create_user(username: str, password: str, is_admin: bool = False) -> Optiona
 
 def init_auth() -> None:
     """加载用户数据，迁移明文密码 → bcrypt。"""
-    # Validate before touching user data or creating a development account.
+    # Validate before touching user data.
     load_auth_config()
     creds = load_credentials(_STORAGE_FILE)
     changed = False
@@ -188,13 +220,3 @@ def init_auth() -> None:
     if changed:
         save_credentials(creds, _STORAGE_FILE)
         logger.info("密码迁移完成")
-    # 如果没有任何用户，初始化 admin/admin123
-    if not creds:
-        admin = Credentials(
-            username="admin",
-            password=hash_password("admin123"),
-            is_admin=True,
-        )
-        creds["admin"] = admin
-        save_credentials(creds, _STORAGE_FILE)
-        logger.info("已创建默认管理员账号 admin/admin123")

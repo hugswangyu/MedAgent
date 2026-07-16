@@ -58,9 +58,5 @@ def save_credentials(
 def get_or_create_credentials(
     file_path: str | None = None,
 ) -> Dict[str, Credentials]:
-    creds = load_credentials(file_path)
-    if not creds:
-        admin = Credentials(username="admin", password="admin123", is_admin=True)
-        creds["admin"] = admin
-        save_credentials(creds, file_path)
-    return creds
+    """Compatibility alias that no longer creates default credentials."""
+    return load_credentials(file_path)

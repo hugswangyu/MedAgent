@@ -6,6 +6,7 @@ from ..auth_manager import (
     create_access_token,
     create_user,
     get_user,
+    is_public_registration_enabled,
     verify_user,
 )
 from ..dependencies import get_current_user
@@ -31,6 +32,12 @@ def login(body: LoginRequest):
 
 @router.post("/register", response_model=TokenResponse)
 def register(body: LoginRequest):
+    if not is_public_registration_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Public registration is disabled",
+        )
+
     username = body.username.strip()
     password = body.password.strip()
     if not username or not password:
