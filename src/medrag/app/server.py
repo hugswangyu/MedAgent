@@ -8,14 +8,21 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import (
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 
-from .api import auth, chat, sessions, documents
+from .api import auth, chat, documents, internal_v1, sessions
 from .auth_manager import init_auth
 
 logger = logging.getLogger(__name__)
@@ -47,6 +54,7 @@ async def lifespan(app: FastAPI):
         logger.warning("MedicalChatService 加载失败（聊天功能不可用）: %s", exc)
 
     chat.set_chat_service(_chat_service)
+    internal_v1.bind_chat_service(_chat_service)
 
     yield
 
@@ -78,6 +86,31 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
 app.include_router(documents.router, prefix="/documents", tags=["documents"])
+app.include_router(
+    internal_v1.router,
+    prefix="/internal/v1",
+    tags=["internal-capabilities"],
+)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+):
+    """internal v1 验证错误使用冻结 envelope，其余 API 保持 FastAPI 默认。"""
+
+    if not request.url.path.startswith("/internal/v1/"):
+        return await request_validation_exception_handler(request, exc)
+    envelope = internal_v1.capabilities.error(
+        "INVALID_REQUEST",
+        "请求参数不符合阶段 0 契约",
+        request_id=f"req_{uuid.uuid4().hex}",
+        details={"errors": jsonable_encoder(exc.errors())},
+    )
+    return JSONResponse(
+        status_code=422,
+        content=envelope.model_dump(mode="json"),
+    )
 
 
 @app.get("/health")
