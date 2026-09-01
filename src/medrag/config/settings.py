@@ -15,7 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 _env_root = BASE_DIR
 while _env_root.parent != _env_root and not (_env_root / ".env").exists():
     _env_root = _env_root.parent
-load_dotenv(_env_root / ".env", override=True)
+load_dotenv(_env_root / ".env", override=False)
 
 
 def _env_str(name: str, default: str) -> str:

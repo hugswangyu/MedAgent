@@ -35,6 +35,8 @@ WORKER_SCOPES = frozenset(
         "safety:output",
         "medical:retrieve",
         "medical:tools",
+        "voice:memory:read",
+        "voice:turn:write",
     }
 )
 

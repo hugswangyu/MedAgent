@@ -14,6 +14,11 @@ from typing import Any, Iterable
 import psycopg2.extras
 
 from medrag.infrastructure.storage.postgres_client import get_conn
+from medrag.memory.controlled import (
+    build_session_summary,
+    candidate_key,
+    extract_medical_fact_candidates,
+)
 
 
 @dataclass(frozen=True)
@@ -42,13 +47,17 @@ def normalize_username(username: str) -> str:
 
 
 def ensure_schema() -> None:
-    """幂等安装阶段 1 schema。"""
+    """幂等安装阶段 1/2 schema。"""
 
-    migration = Path(__file__).resolve().parents[4] / "scripts" / "phase1_identity_data.sql"
-    sql = migration.read_text(encoding="utf-8")
+    scripts_dir = Path(__file__).resolve().parents[4] / "scripts"
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            for name in (
+                "phase1_identity_data.sql",
+                "phase2_safe_voice.sql",
+                "phase3_memory.sql",
+            ):
+                cur.execute((scripts_dir / name).read_text(encoding="utf-8"))
     _normalize_existing_users()
 
 
@@ -525,6 +534,534 @@ def record_capability_event(
                     json.dumps(safe_details, ensure_ascii=False, default=str),
                 ),
             )
+
+
+def record_voice_turn(
+    *,
+    user_id: str,
+    session_id: str,
+    turn_id: str,
+    turn_index: int | None,
+    user_text: str,
+    raw_model_text: str,
+    final_text: str,
+    safety_result: dict[str, Any],
+    evidence: list[dict[str, Any]],
+) -> None:
+    """幂等写入单轮消息、安全结果和证据，全部受 turn_id 约束。"""
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO voice_turns(
+                    turn_id, session_id, user_id, turn_index, user_text,
+                    assistant_text, raw_model_text, final_tts_text, safety_result
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (session_id, turn_id) DO UPDATE SET
+                    turn_index = COALESCE(EXCLUDED.turn_index, voice_turns.turn_index),
+                    user_text = EXCLUDED.user_text,
+                    assistant_text = EXCLUDED.assistant_text,
+                    raw_model_text = EXCLUDED.raw_model_text,
+                    final_tts_text = EXCLUDED.final_tts_text,
+                    safety_result = EXCLUDED.safety_result,
+                    updated_at = NOW()
+                WHERE voice_turns.user_id = EXCLUDED.user_id
+                """,
+                (
+                    turn_id,
+                    session_id,
+                    user_id,
+                    turn_index,
+                    user_text,
+                    final_text,
+                    raw_model_text,
+                    final_text,
+                    json.dumps(safety_result, ensure_ascii=False, default=str),
+                ),
+            )
+            if cur.rowcount != 1:
+                raise PermissionError("turn is already bound to another user or session")
+            _upsert_conversation_message(
+                cur,
+                user_id=user_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                role="user",
+                content=user_text,
+                metadata={"turn_index": turn_index},
+            )
+            _upsert_conversation_message(
+                cur,
+                user_id=user_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                role="assistant",
+                content=final_text,
+                metadata={"turn_index": turn_index, "safety_checked": True},
+            )
+            for item in evidence:
+                evidence_id = str(item.get("evidence_id") or "")
+                if not evidence_id or str(item.get("turn_id") or "") != turn_id:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO evidence(
+                        evidence_id, turn_id, session_id, user_id, source_type,
+                        source_id, document_id, payload
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (evidence_id) DO UPDATE SET payload = EXCLUDED.payload
+                    WHERE evidence.session_id = EXCLUDED.session_id
+                      AND evidence.turn_id = EXCLUDED.turn_id
+                      AND evidence.user_id = EXCLUDED.user_id
+                    """,
+                    (
+                        evidence_id,
+                        turn_id,
+                        session_id,
+                        user_id,
+                        str(item.get("source_type") or "unknown"),
+                        str(item.get("source_id") or ""),
+                        str(item.get("document_id") or ""),
+                        json.dumps(item, ensure_ascii=False, default=str),
+                    ),
+                )
+
+
+def _upsert_conversation_message(
+    cur: Any,
+    *,
+    user_id: str,
+    session_id: str,
+    turn_id: str,
+    role: str,
+    content: str,
+    metadata: dict[str, Any],
+    source_type: str = "voice",
+) -> None:
+    """Write one canonical message; an empty side of a partial turn is omitted."""
+
+    if not content.strip():
+        return
+    message_id = str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"medagent:{session_id}:{turn_id}:{role}")
+    )
+    cur.execute(
+        """
+        INSERT INTO conversation_messages(
+            message_id, user_id, session_id, turn_id, role, content,
+            source_type, metadata
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (session_id, turn_id, role) DO UPDATE SET
+            content = EXCLUDED.content,
+            source_type = EXCLUDED.source_type,
+            metadata = EXCLUDED.metadata,
+            updated_at = NOW()
+        WHERE conversation_messages.user_id = EXCLUDED.user_id
+        """,
+        (
+            message_id,
+            user_id,
+            session_id,
+            turn_id,
+            role,
+            content,
+            source_type,
+            json.dumps(metadata, ensure_ascii=False, default=str),
+        ),
+    )
+    if cur.rowcount != 1:
+        raise PermissionError("message is already bound to another user")
+
+
+def record_text_message(
+    *,
+    user_id: str,
+    session_id: str,
+    turn_id: str,
+    role: str,
+    content: str,
+) -> None:
+    """Mirror a text-chat message into the canonical PostgreSQL message table."""
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            _upsert_conversation_message(
+                cur,
+                user_id=user_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                role=role,
+                content=content,
+                metadata={},
+                source_type="text",
+            )
+
+
+def finalize_voice_session_memory(
+    *, user_id: str, session_id: str, summary_version: int
+) -> dict[str, Any]:
+    """Idempotently close the PostgreSQL episodic/fact-memory loop."""
+
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT session_id FROM voice_sessions
+                WHERE session_id = %s AND user_id = %s
+                FOR UPDATE
+                """,
+                (session_id, user_id),
+            )
+            if cur.fetchone() is None:
+                raise PermissionError("voice session does not belong to user")
+            cur.execute(
+                """
+                SELECT * FROM session_summaries
+                WHERE session_id = %s AND summary_version = %s
+                """,
+                (session_id, summary_version),
+            )
+            existing = cur.fetchone()
+            if existing is not None:
+                return _finalize_result(cur, dict(existing), created=False)
+
+            cur.execute(
+                """
+                SELECT turn_id, role, content
+                FROM conversation_messages
+                WHERE session_id = %s AND user_id = %s
+                ORDER BY created_at, turn_id, role DESC
+                """,
+                (session_id, user_id),
+            )
+            messages = [dict(row) for row in cur.fetchall()]
+            summary = build_session_summary(messages)
+            summary_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"medagent:{session_id}:summary:{summary_version}",
+                )
+            )
+            cur.execute(
+                """
+                INSERT INTO session_summaries(
+                    summary_id, session_id, user_id, summary_version, content,
+                    structured_summary, source_digest, message_count
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+                """,
+                (
+                    summary_id,
+                    session_id,
+                    user_id,
+                    summary_version,
+                    summary["content"],
+                    json.dumps(summary["structured_summary"], ensure_ascii=False),
+                    summary["source_digest"],
+                    summary["message_count"],
+                ),
+            )
+            summary_row = dict(cur.fetchone())
+            candidate_count = 0
+            for message in messages:
+                if message["role"] != "user":
+                    continue
+                candidate_count += _insert_candidates(
+                    cur,
+                    user_id=user_id,
+                    session_id=session_id,
+                    source_type="user_message",
+                    source_id=str(message["turn_id"]),
+                    source_turn_id=str(message["turn_id"]),
+                    source_document_id=None,
+                    text=str(message["content"]),
+                    confirmed=False,
+                )
+            cur.execute(
+                """
+                SELECT payload FROM evidence
+                WHERE session_id = %s AND user_id = %s AND source_type = 'personal'
+                """,
+                (session_id, user_id),
+            )
+            seen_documents: set[str] = set()
+            for row in cur.fetchall():
+                payload = row["payload"]
+                if not isinstance(payload, dict):
+                    continue
+                document_id = str(payload.get("document_id") or "")
+                if not document_id or document_id in seen_documents:
+                    continue
+                if (
+                    payload.get("subject_scope") != "user_specific"
+                    or payload.get("verification_status") not in {"verified", "trusted"}
+                ):
+                    continue
+                preview = str(payload.get("content_preview") or "").strip()
+                if not preview:
+                    continue
+                seen_documents.add(document_id)
+                candidate_count += _insert_candidates(
+                    cur,
+                    user_id=user_id,
+                    session_id=session_id,
+                    source_type="personal_document",
+                    source_id=document_id,
+                    source_turn_id=None,
+                    source_document_id=document_id,
+                    text=preview,
+                    confirmed=True,
+                )
+            result = _finalize_result(cur, summary_row, created=True)
+            result["created_candidates"] = candidate_count
+            return result
+
+
+def _insert_candidates(
+    cur: Any,
+    *,
+    user_id: str,
+    session_id: str,
+    source_type: str,
+    source_id: str,
+    source_turn_id: str | None,
+    source_document_id: str | None,
+    text: str,
+    confirmed: bool,
+) -> int:
+    inserted = 0
+    for candidate in extract_medical_fact_candidates(text, source_type=source_type):
+        key = candidate_key(
+            source_type=source_type,
+            source_id=source_id,
+            memory_type=candidate.memory_type,
+            content=candidate.content,
+        )
+        cur.execute(
+            """
+            INSERT INTO medical_fact_memories(
+                memory_id, user_id, memory_type, content, structured_value,
+                status, source_type, source_session_id, source_turn_id,
+                source_document_id, confidence, candidate_key
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id, candidate_key) DO NOTHING
+            """,
+            (
+                str(uuid.uuid4()),
+                user_id,
+                candidate.memory_type,
+                candidate.content,
+                json.dumps(candidate.structured_value, ensure_ascii=False),
+                "confirmed" if confirmed else "proposed",
+                source_type,
+                session_id,
+                source_turn_id,
+                source_document_id,
+                candidate.confidence,
+                key,
+            ),
+        )
+        inserted += max(cur.rowcount, 0)
+    return inserted
+
+
+def _finalize_result(
+    cur: Any, summary: dict[str, Any], *, created: bool
+) -> dict[str, Any]:
+    cur.execute(
+        """
+        SELECT COUNT(*) FROM medical_fact_memories
+        WHERE source_session_id = %s AND deleted_at IS NULL
+        """,
+        (summary["session_id"],),
+    )
+    count = int(cur.fetchone()["count"])
+    return {
+        "session_id": summary["session_id"],
+        "summary_id": str(summary["summary_id"]),
+        "summary_version": int(summary["summary_version"]),
+        "message_count": int(summary["message_count"]),
+        "memory_candidate_count": count,
+        "created": created,
+        "replacement_verified": True,
+    }
+
+
+def list_medical_fact_memories(
+    *, user_id: str, statuses: Iterable[str] | None = None
+) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            query = """
+                SELECT * FROM medical_fact_memories
+                WHERE user_id = %s AND deleted_at IS NULL
+            """
+            params: list[Any] = [user_id]
+            if statuses:
+                query += " AND status = ANY(%s)"
+                params.append(list(statuses))
+            query += " ORDER BY created_at DESC, memory_id"
+            cur.execute(query, params)
+            return [_memory_row(row) for row in cur.fetchall()]
+
+
+def set_medical_fact_status(
+    *, user_id: str, memory_id: str, status: str
+) -> dict[str, Any] | None:
+    if status not in {"confirmed", "rejected"}:
+        raise ValueError("invalid target memory status")
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                UPDATE medical_fact_memories
+                SET status = %s, updated_at = NOW()
+                WHERE memory_id = %s AND user_id = %s AND deleted_at IS NULL
+                  AND status IN ('proposed', %s)
+                RETURNING *
+                """,
+                (status, memory_id, user_id, status),
+            )
+            row = cur.fetchone()
+            return _memory_row(row) if row else None
+
+
+def correct_medical_fact_memory(
+    *,
+    user_id: str,
+    memory_id: str,
+    content: str,
+    structured_value: dict[str, Any],
+    memory_type: str | None = None,
+    confidence: float = 1.0,
+) -> dict[str, Any] | None:
+    """Create a confirmed replacement and supersede the old version atomically."""
+
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT * FROM medical_fact_memories
+                WHERE memory_id = %s AND user_id = %s AND deleted_at IS NULL
+                FOR UPDATE
+                """,
+                (memory_id, user_id),
+            )
+            old = cur.fetchone()
+            if old is None:
+                return None
+            replacement_type = memory_type or str(old["memory_type"])
+            key = candidate_key(
+                source_type="user_correction",
+                source_id=memory_id,
+                memory_type=replacement_type,
+                content=content,
+            )
+            cur.execute(
+                """
+                SELECT * FROM medical_fact_memories
+                WHERE user_id = %s AND candidate_key = %s AND deleted_at IS NULL
+                """,
+                (user_id, key),
+            )
+            existing = cur.fetchone()
+            if existing is not None:
+                return _memory_row(existing)
+            if old["status"] not in {"proposed", "confirmed"}:
+                raise ValueError("only proposed or confirmed memory can be corrected")
+            new_id = str(uuid.uuid4())
+            cur.execute(
+                """
+                INSERT INTO medical_fact_memories(
+                    memory_id, user_id, memory_type, content, structured_value,
+                    status, source_type, source_session_id, confidence,
+                    supersedes_memory_id, candidate_key
+                ) VALUES (%s, %s, %s, %s, %s, 'confirmed', 'user_correction',
+                          %s, %s, %s, %s)
+                RETURNING *
+                """,
+                (
+                    new_id,
+                    user_id,
+                    replacement_type,
+                    content,
+                    json.dumps(structured_value, ensure_ascii=False),
+                    old["source_session_id"],
+                    confidence,
+                    memory_id,
+                    key,
+                ),
+            )
+            replacement = dict(cur.fetchone())
+            cur.execute(
+                """
+                UPDATE medical_fact_memories
+                SET status = 'superseded', updated_at = NOW()
+                WHERE memory_id = %s AND user_id = %s
+                """,
+                (memory_id, user_id),
+            )
+            return _memory_row(replacement)
+
+
+def delete_medical_fact_memory(*, user_id: str, memory_id: str) -> bool:
+    """Irreversibly redact content while retaining a minimal audit identity."""
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE medical_fact_memories
+                SET content = '', structured_value = '{}'::jsonb,
+                    deleted_at = COALESCE(deleted_at, NOW()), updated_at = NOW()
+                WHERE memory_id = %s AND user_id = %s
+                """,
+                (memory_id, user_id),
+            )
+            return cur.rowcount == 1
+
+
+def export_controlled_memory(*, user_id: str) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT * FROM medical_fact_memories
+                WHERE user_id = %s AND deleted_at IS NULL
+                ORDER BY created_at, memory_id
+                """,
+                (user_id,),
+            )
+            memories = [_memory_row(row) for row in cur.fetchall()]
+            cur.execute(
+                """
+                SELECT * FROM session_summaries
+                WHERE user_id = %s ORDER BY created_at, summary_id
+                """,
+                (user_id,),
+            )
+            summaries = [_json_row(row) for row in cur.fetchall()]
+    return {
+        "schema_version": 1,
+        "user_id": user_id,
+        "medical_fact_memories": memories,
+        "session_summaries": summaries,
+    }
+
+
+def _memory_row(row: Any) -> dict[str, Any]:
+    return _json_row(row)
+
+
+def _json_row(row: Any) -> dict[str, Any]:
+    data = dict(row)
+    for key, value in list(data.items()):
+        if isinstance(value, uuid.UUID):
+            data[key] = str(value)
+        elif isinstance(value, datetime):
+            data[key] = value.isoformat()
+    return data
 
 
 def request_digest(payload: dict[str, Any]) -> str:

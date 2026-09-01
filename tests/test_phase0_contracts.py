@@ -3,6 +3,8 @@ import os
 from functools import wraps
 from types import SimpleNamespace
 
+import pytest
+from medrag.contracts.phase0 import VoiceTurnRecordRequest
 from medrag.service.phase0_capabilities import Phase0CapabilityService
 
 
@@ -49,6 +51,48 @@ async def test_input_safety_prioritizes_current_self_in_mixed_context():
     assert "120" in mixed["fixed_response"]
     assert other_only["action"] == "allow"
     assert other_only["risk_level"] == "context_only"
+
+
+@async_test
+async def test_input_safety_reports_semantic_dimensions_and_special_population():
+    service = Phase0CapabilityService()
+    result = await service.input_check(
+        "我怀孕了，目前没有胸痛，只想科普胸痛是什么", "req_context"
+    )
+
+    assert result["action"] == "allow"
+    assert result["semantic_context"] == {
+        "current_self": False,
+        "current_other": False,
+        "other_person": False,
+        "historical": False,
+        "negated": True,
+        "educational": True,
+        "ongoing": False,
+        "special_populations": ["pregnant"],
+    }
+
+
+@async_test
+async def test_input_safety_distinguishes_current_child_from_current_self():
+    service = Phase0CapabilityService()
+    result = await service.input_check("我孩子现在抽搐", "req_child")
+
+    assert result["action"] == "emergency"
+    assert result["semantic_context"]["current_self"] is False
+    assert result["semantic_context"]["current_other"] is True
+    assert result["semantic_context"]["special_populations"] == ["child"]
+
+
+@async_test
+async def test_ongoing_first_person_red_symptom_is_current_emergency():
+    service = Phase0CapabilityService()
+    result = await service.input_check(
+        "我胸痛一直没有缓解", "req_ongoing"
+    )
+
+    assert result["action"] == "emergency"
+    assert result["semantic_context"]["ongoing"] is True
 
 
 @async_test
@@ -144,6 +188,109 @@ async def test_output_check_fails_closed_for_dangerous_advice():
 
 
 @async_test
+async def test_output_check_displays_unresolved_conflicts_without_source_priority():
+    service = Phase0CapabilityService()
+    evidence = [
+        {
+            "evidence_id": "medical_1",
+            "turn_id": "turn_1",
+            "source_type": "medical",
+            "fact_type": "dosage",
+            "fact_subject_id": "drug:aspirin",
+            "subject_scope": "general",
+            "source_category": "guideline",
+            "content_preview": "每日 5 mg",
+            "authority_level": "guideline",
+        },
+        {
+            "evidence_id": "personal_1",
+            "turn_id": "turn_1",
+            "source_type": "personal",
+            "fact_type": "dosage",
+            "fact_subject_id": "drug:aspirin",
+            "subject_scope": "user_specific",
+            "source_category": "prescription",
+            "content_preview": "每日 10 mg",
+            "authority_level": "clinical_document",
+        },
+    ]
+
+    result = await service.output_check("请按现有处方核实。", evidence, "req_conflict")
+
+    assert result["allowed"] is False
+    assert result["conflict_notice"]
+    assert result["safe_text"] == result["conflict_notice"]
+    conflict = result["evidence_conflicts"][0]
+    assert conflict["resolution"] == "unresolved"
+    assert conflict["fact_subject_id"] == "drug:aspirin"
+    assert conflict["high_risk"] is True
+    assert {item["source_type"] for item in conflict["sources"]} == {
+        "medical",
+        "personal",
+    }
+
+
+@async_test
+async def test_output_check_adds_required_dosage_notice_before_tts():
+    service = Phase0CapabilityService()
+    result = await service.output_check(
+        "每日服用 5 mg。", [], "req_dosage"
+    )
+
+    assert result["allowed"] is True
+    assert "医生处方" in result["safe_text"]
+    assert result["required_notices"]
+
+
+@async_test
+async def test_output_check_does_not_conflict_different_dosage_subjects():
+    service = Phase0CapabilityService()
+    evidence = [
+        {
+            "evidence_id": "aspirin",
+            "turn_id": "turn_1",
+            "source_type": "medical",
+            "fact_type": "dosage",
+            "source_category": "reference",
+            "content_preview": "阿司匹林 100mg",
+        },
+        {
+            "evidence_id": "metformin",
+            "turn_id": "turn_1",
+            "source_type": "medical",
+            "fact_type": "dosage",
+            "source_category": "reference",
+            "content_preview": "二甲双胍 500mg",
+        },
+    ]
+
+    result = await service.output_check("请分别核对剂量。", evidence, "req")
+
+    assert result["allowed"] is True
+    assert result["evidence_conflicts"] == []
+
+
+def test_turn_record_rejects_cross_turn_evidence():
+    with pytest.raises(ValueError, match="request turn_id"):
+        VoiceTurnRecordRequest(
+            session_id="vs_1",
+            turn_id="turn_1",
+            idempotency_key="turn-write-123",
+            evidence=[
+                {
+                    "evidence_id": "ev_1",
+                    "turn_id": "turn_2",
+                    "source_type": "medical",
+                    "source_category": "guideline",
+                    "source_id": "source_1",
+                    "request_id": "req_1",
+                    "latency_ms": 1,
+                }
+            ],
+        )
+
+
+@async_test
 async def test_deterministic_tool_contract():
     service = Phase0CapabilityService()
     result = await service.execute_tool(
@@ -156,7 +303,6 @@ async def test_deterministic_tool_contract():
 
 def test_internal_api_auth_and_validation_use_frozen_envelope():
     from fastapi.testclient import TestClient
-
     from medrag.app.server import app
 
     os.environ["MEDAGENT_INTERNAL_API_KEY"] = "test-internal-secret"
