@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import timedelta
 from unittest.mock import MagicMock
 
@@ -73,9 +74,15 @@ def test_valid_token_round_trip(monkeypatch):
     monkeypatch.setenv("MEDRAG_ENV", "test")
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key")
 
-    token = auth_manager.create_access_token("alice")
+    user_id = str(uuid.uuid4())
+    token = auth_manager.create_access_token(
+        auth_manager.AuthUser(user_id=user_id, username="alice")
+    )
 
-    assert auth_manager.decode_access_token(token)["sub"] == "alice"
+    payload = auth_manager.decode_access_token(token)
+    assert payload["sub"] == user_id
+    assert payload["username"] == "alice"
+    assert payload["token_use"] == "access"
 
 
 def test_public_registration_defaults_off_in_prod(monkeypatch):
@@ -114,12 +121,19 @@ def test_register_rejects_requests_when_public_registration_is_disabled(monkeypa
 def test_init_auth_does_not_create_default_admin(monkeypatch):
     monkeypatch.setattr(auth_manager, "load_auth_config", MagicMock())
     monkeypatch.setattr(auth_manager, "load_credentials", MagicMock(return_value={}))
-    save_credentials = MagicMock()
-    monkeypatch.setattr(auth_manager, "save_credentials", save_credentials)
+    ensure_schema = MagicMock()
+    import_legacy_users = MagicMock(return_value=0)
+    monkeypatch.setattr(auth_manager.phase1_repository, "ensure_schema", ensure_schema)
+    monkeypatch.setattr(
+        auth_manager.phase1_repository,
+        "import_legacy_users",
+        import_legacy_users,
+    )
 
     auth_manager.init_auth()
 
-    save_credentials.assert_not_called()
+    ensure_schema.assert_called_once_with()
+    import_legacy_users.assert_called_once_with([])
 
 
 def test_legacy_credentials_helper_does_not_create_default_admin(monkeypatch):

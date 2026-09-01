@@ -17,6 +17,13 @@ from medrag.contracts.phase0 import (
     OutputCheckRequest,
 )
 from medrag.service.phase0_capabilities import Phase0CapabilityService
+from medrag.app.worker_auth import (
+    WorkerAuthorizationError,
+    WorkerPrincipal,
+    allow_legacy_internal_key,
+    authorize_worker_request,
+)
+from medrag.infrastructure.storage import phase1_repository
 
 router = APIRouter()
 capabilities = Phase0CapabilityService()
@@ -33,15 +40,70 @@ def _timeout(name: str, default: int) -> int:
         return default
 
 
-def _authorize(api_key: str | None) -> CapabilityEnvelope | None:
+def _authorize(
+    *,
+    api_key: str | None,
+    authorization: str | None,
+    nonce: str | None,
+    required_scope: str,
+    payload: dict,
+) -> tuple[CapabilityEnvelope | None, WorkerPrincipal | None]:
+    if authorization:
+        try:
+            principal = authorize_worker_request(
+                authorization=authorization,
+                nonce=nonce,
+                required_scope=required_scope,
+                payload=payload,
+            )
+        except WorkerAuthorizationError as exc:
+            return (
+                capabilities.error(
+                    exc.code,
+                    str(exc),
+                    request_id=f"req_{uuid.uuid4().hex}",
+                ),
+                None,
+            )
+        return None, principal
     expected = os.getenv("MEDAGENT_INTERNAL_API_KEY", "").strip()
-    if not expected or not api_key or api_key != expected:
-        return capabilities.error(
+    if allow_legacy_internal_key() and expected and api_key and api_key == expected:
+        return None, None
+    return (
+        capabilities.error(
             "UNAUTHORIZED",
             "内部能力凭据无效",
             request_id=f"req_{uuid.uuid4().hex}",
-        )
-    return None
+        ),
+        None,
+    )
+
+
+def _audit(
+    principal: WorkerPrincipal | None,
+    *,
+    payload: dict,
+    operation: str,
+    result: CapabilityEnvelope,
+) -> None:
+    if principal is None:
+        return
+    data = result.data if isinstance(result.data, dict) else {}
+    evidence = data.get("evidence")
+    phase1_repository.record_capability_event(
+        user_id=principal.user_id,
+        session_id=str(payload["session_id"]),
+        turn_id=str(payload["turn_id"]),
+        action=operation,
+        outcome=result.status,
+        request_id=result.request_id,
+        details={
+            "idempotency_key": payload.get("idempotency_key"),
+            "metrics": result.metrics,
+            "error_code": result.error.code if result.error else None,
+        },
+        evidence=evidence if isinstance(evidence, list) else None,
+    )
 
 
 def _response(
@@ -57,8 +119,17 @@ def _response(
 async def input_check(
     payload: InputCheckRequest,
     x_internal_api_key: Annotated[str | None, Header()] = None,
+    authorization: Annotated[str | None, Header()] = None,
+    x_request_nonce: Annotated[str | None, Header()] = None,
 ):
-    denied = _authorize(x_internal_api_key)
+    payload_data = payload.model_dump(mode="json")
+    denied, principal = _authorize(
+        api_key=x_internal_api_key,
+        authorization=authorization,
+        nonce=x_request_nonce,
+        required_scope="safety:input",
+        payload=payload_data,
+    )
     if denied:
         return _response(denied, unauthorized=True)
     result = await capabilities.invoke(
@@ -70,6 +141,7 @@ async def input_check(
             payload.text, request_id
         ),
     )
+    _audit(principal, payload=payload_data, operation="safety.input-check", result=result)
     return _response(result)
 
 
@@ -77,8 +149,17 @@ async def input_check(
 async def output_check(
     payload: OutputCheckRequest,
     x_internal_api_key: Annotated[str | None, Header()] = None,
+    authorization: Annotated[str | None, Header()] = None,
+    x_request_nonce: Annotated[str | None, Header()] = None,
 ):
-    denied = _authorize(x_internal_api_key)
+    payload_data = payload.model_dump(mode="json")
+    denied, principal = _authorize(
+        api_key=x_internal_api_key,
+        authorization=authorization,
+        nonce=x_request_nonce,
+        required_scope="safety:output",
+        payload=payload_data,
+    )
     if denied:
         return _response(denied, unauthorized=True)
     result = await capabilities.invoke(
@@ -92,6 +173,7 @@ async def output_check(
             request_id,
         ),
     )
+    _audit(principal, payload=payload_data, operation="safety.output-check", result=result)
     return _response(result)
 
 
@@ -99,8 +181,17 @@ async def output_check(
 async def medical_retrieve(
     payload: MedicalRetrieveRequest,
     x_internal_api_key: Annotated[str | None, Header()] = None,
+    authorization: Annotated[str | None, Header()] = None,
+    x_request_nonce: Annotated[str | None, Header()] = None,
 ):
-    denied = _authorize(x_internal_api_key)
+    payload_data = payload.model_dump(mode="json")
+    denied, principal = _authorize(
+        api_key=x_internal_api_key,
+        authorization=authorization,
+        nonce=x_request_nonce,
+        required_scope="medical:retrieve",
+        payload=payload_data,
+    )
     if denied:
         return _response(denied, unauthorized=True)
     result = await capabilities.invoke(
@@ -116,6 +207,7 @@ async def medical_retrieve(
             request_id=request_id,
         ),
     )
+    _audit(principal, payload=payload_data, operation="medical.retrieve", result=result)
     return _response(result)
 
 
@@ -123,8 +215,17 @@ async def medical_retrieve(
 async def medical_tool_execute(
     payload: MedicalToolRequest,
     x_internal_api_key: Annotated[str | None, Header()] = None,
+    authorization: Annotated[str | None, Header()] = None,
+    x_request_nonce: Annotated[str | None, Header()] = None,
 ):
-    denied = _authorize(x_internal_api_key)
+    payload_data = payload.model_dump(mode="json")
+    denied, principal = _authorize(
+        api_key=x_internal_api_key,
+        authorization=authorization,
+        nonce=x_request_nonce,
+        required_scope="medical:tools",
+        payload=payload_data,
+    )
     if denied:
         return _response(denied, unauthorized=True)
     result = await capabilities.invoke(
@@ -135,5 +236,11 @@ async def medical_tool_execute(
         function=lambda request_id: capabilities.execute_tool(
             payload.tool_name, payload.arguments, request_id
         ),
+    )
+    _audit(
+        principal,
+        payload=payload_data,
+        operation=f"medical.tools.{payload.tool_name}",
+        result=result,
     )
     return _response(result)

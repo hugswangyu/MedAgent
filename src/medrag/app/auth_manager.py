@@ -1,26 +1,22 @@
-"""认证管理器：bcrypt 密码哈希 + JWT 签发/验证。
-
-复用 ``medrag.auth.credentials`` 中的 JSON 文件存储，但将所有密码
-升级为 bcrypt 哈希。首次启动时自动迁移已有的明文密码。
-"""
+"""认证管理器：PostgreSQL 用户、访问 JWT 与短期 worker JWT。"""
 
 from __future__ import annotations
 
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Optional
 
 import bcrypt
 from jose import JWTError, jwt
 
 from medrag.auth.credentials import (
-    Credentials,
     load_credentials,
-    save_credentials,
 )
 from medrag.config.settings import settings
+from medrag.infrastructure.storage import phase1_repository
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +25,16 @@ SUPPORTED_ENVIRONMENTS = frozenset({"dev", "test", "prod"})
 MIN_PRODUCTION_SECRET_LENGTH = 32
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 天
+WORKER_TOKEN_EXPIRE_SECONDS = 300
+WORKER_AUDIENCE = "medagent-internal"
+WORKER_SCOPES = frozenset(
+    {
+        "safety:input",
+        "safety:output",
+        "medical:retrieve",
+        "medical:tools",
+    }
+)
 
 _STORAGE_FILE = str(settings.credentials_path)
 
@@ -36,6 +42,7 @@ _STORAGE_FILE = str(settings.credentials_path)
 @dataclass
 class AuthUser:
     """轻量级认证用户视图（不暴露密码）。"""
+    user_id: str
     username: str
     is_admin: bool = False
 
@@ -140,23 +147,91 @@ def verify_password(plain: str, hashed: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def create_access_token(
-    username: str,
+    user: AuthUser | str,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     config = load_auth_config()
-    expire = datetime.now(timezone.utc) + (
+    now = datetime.now(timezone.utc)
+    expire = now + (
         expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    payload = {"sub": username, "exp": expire}
+    if isinstance(user, AuthUser):
+        user_id = user.user_id
+        username = user.username
+    else:
+        user_id = str(user)
+        username = ""
+    payload = {
+        "sub": user_id,
+        "username": username,
+        "token_use": "access",
+        "iat": now,
+        "exp": expire,
+        "jti": str(uuid.uuid4()),
+    }
     return jwt.encode(payload, config.secret_key, algorithm=ALGORITHM)
 
 
 def decode_access_token(token: str) -> Optional[dict]:
     config = load_auth_config()
     try:
-        return jwt.decode(token, config.secret_key, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, config.secret_key, algorithms=[ALGORITHM])
+        if payload.get("token_use") not in {None, "access"}:
+            return None
+        return payload
     except JWTError:
         return None
+
+
+def create_worker_token(
+    *,
+    user_id: str,
+    session_id: str,
+    knowledge_base_id: str,
+    scopes: set[str] | frozenset[str] = WORKER_SCOPES,
+    expires_delta: Optional[timedelta] = None,
+) -> str:
+    """签发仅供单个 Voice Session 使用的分钟级 worker token。"""
+
+    requested_scopes = set(scopes)
+    if not requested_scopes or not requested_scopes.issubset(WORKER_SCOPES):
+        raise ValueError("worker token scopes are invalid")
+    config = load_auth_config()
+    now = datetime.now(timezone.utc)
+    expire = now + (
+        expires_delta or timedelta(seconds=WORKER_TOKEN_EXPIRE_SECONDS)
+    )
+    payload = {
+        "sub": user_id,
+        "sid": session_id,
+        "kid": knowledge_base_id,
+        "scope": " ".join(sorted(requested_scopes)),
+        "token_use": "worker",
+        "aud": WORKER_AUDIENCE,
+        "iat": now,
+        "exp": expire,
+        "jti": str(uuid.uuid4()),
+    }
+    return jwt.encode(payload, config.secret_key, algorithm=ALGORITHM)
+
+
+def decode_worker_token(token: str) -> Optional[dict]:
+    config = load_auth_config()
+    try:
+        payload = jwt.decode(
+            token,
+            config.secret_key,
+            algorithms=[ALGORITHM],
+            audience=WORKER_AUDIENCE,
+        )
+    except JWTError:
+        return None
+    if payload.get("token_use") != "worker":
+        return None
+    required = {"sub", "sid", "kid", "scope", "jti", "exp"}
+    if not required.issubset(payload):
+        return None
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -164,37 +239,49 @@ def decode_access_token(token: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def get_user(username: str) -> Optional[AuthUser]:
-    creds = load_credentials(_STORAGE_FILE)
-    user = creds.get(username)
+    user = phase1_repository.get_user_by_username(username)
     if user is None:
         return None
-    return AuthUser(username=user.username, is_admin=user.is_admin)
+    return AuthUser(
+        user_id=user.user_id,
+        username=user.username,
+        is_admin=user.is_admin,
+    )
 
 
-def get_user_with_password(username: str) -> Optional[Credentials]:
-    return load_credentials(_STORAGE_FILE).get(username)
+def get_user_by_id(user_id: str) -> Optional[AuthUser]:
+    user = phase1_repository.get_user_by_id(user_id)
+    if user is None:
+        return None
+    return AuthUser(
+        user_id=user.user_id,
+        username=user.username,
+        is_admin=user.is_admin,
+    )
 
 
 def verify_user(username: str, plain_password: str) -> Optional[AuthUser]:
-    user = get_user_with_password(username)
+    user = phase1_repository.get_user_by_username(username)
     if user is None:
         return None
-    if verify_password(plain_password, user.password):
-        return AuthUser(username=user.username, is_admin=user.is_admin)
+    if verify_password(plain_password, user.password_hash):
+        return AuthUser(
+            user_id=user.user_id,
+            username=user.username,
+            is_admin=user.is_admin,
+        )
     return None
 
 
 def create_user(username: str, password: str, is_admin: bool = False) -> Optional[AuthUser]:
-    creds = load_credentials(_STORAGE_FILE)
-    if username in creds:
+    user = phase1_repository.create_user(username, hash_password(password), is_admin)
+    if user is None:
         return None
-    creds[username] = Credentials(
-        username=username,
-        password=hash_password(password),
-        is_admin=is_admin,
+    return AuthUser(
+        user_id=user.user_id,
+        username=user.username,
+        is_admin=user.is_admin,
     )
-    save_credentials(creds, _STORAGE_FILE)
-    return AuthUser(username=username, is_admin=is_admin)
 
 
 # ---------------------------------------------------------------------------
@@ -202,21 +289,20 @@ def create_user(username: str, password: str, is_admin: bool = False) -> Optiona
 # ---------------------------------------------------------------------------
 
 def init_auth() -> None:
-    """加载用户数据，迁移明文密码 → bcrypt。"""
-    # Validate before touching user data.
+    """安装 schema 并把旧 JSON 用户复制到 PostgreSQL；保留原文件。"""
+
     load_auth_config()
     creds = load_credentials(_STORAGE_FILE)
-    changed = False
-    for name, user in list(creds.items()):
-        if user.password.startswith("$2"):
-            continue  # 已是 bcrypt
-        logger.info("迁移用户 %s 的密码为 bcrypt 哈希", name)
-        creds[name] = Credentials(
-            username=user.username,
-            password=hash_password(user.password),
-            is_admin=user.is_admin,
+    phase1_repository.ensure_schema()
+    legacy_rows = []
+    for user in creds.values():
+        password_hash = (
+            user.password if user.password.startswith("$2") else hash_password(user.password)
         )
-        changed = True
-    if changed:
-        save_credentials(creds, _STORAGE_FILE)
-        logger.info("密码迁移完成")
+        legacy_rows.append((user.username, password_hash, user.is_admin))
+    imported = phase1_repository.import_legacy_users(legacy_rows)
+    logger.info(
+        "PostgreSQL 身份初始化完成：legacy_users=%s imported=%s legacy_file=preserved",
+        len(legacy_rows),
+        imported,
+    )

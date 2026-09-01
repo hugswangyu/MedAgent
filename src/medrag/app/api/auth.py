@@ -26,8 +26,8 @@ def login(body: LoginRequest):
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
 
-    token = create_access_token(username)
-    return TokenResponse(access_token=token, username=username)
+    token = create_access_token(user)
+    return TokenResponse(access_token=token, user_id=user.user_id, username=username)
 
 
 @router.post("/register", response_model=TokenResponse)
@@ -50,10 +50,14 @@ def register(body: LoginRequest):
     if user is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="注册失败")
 
-    token = create_access_token(username)
-    return TokenResponse(access_token=token, username=username)
+    token = create_access_token(user)
+    return TokenResponse(access_token=token, user_id=user.user_id, username=username)
 
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user=Depends(get_current_user)):
-    return UserResponse(username=current_user.username, is_admin=current_user.is_admin)
+    return UserResponse(
+        user_id=current_user.user_id,
+        username=current_user.username,
+        is_admin=current_user.is_admin,
+    )
