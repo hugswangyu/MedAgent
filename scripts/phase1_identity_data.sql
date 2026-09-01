@@ -1,8 +1,23 @@
 CREATE TABLE IF NOT EXISTS users (
     user_id UUID PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
+    normalized_username TEXT,
     password_hash TEXT NOT NULL,
     is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL DEFAULT 'active',
+    token_version INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS normalized_username TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 1;
+
+CREATE TABLE IF NOT EXISTS knowledge_base_ownership (
+    kb_id TEXT PRIMARY KEY,
+    owner_user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE RESTRICT,
+    status TEXT NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -13,10 +28,25 @@ CREATE TABLE IF NOT EXISTS voice_sessions (
     knowledge_base_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'created',
     room_name TEXT,
+    binding_version BIGINT NOT NULL DEFAULT 1,
+    livekit_job_id TEXT,
+    client_id TEXT,
+    client_type TEXT NOT NULL DEFAULT 'web',
+    participant_identity TEXT,
+    token_expires_at TIMESTAMPTZ,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ended_at TIMESTAMPTZ
 );
+
+ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS binding_version BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS livekit_job_id TEXT;
+ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS client_id TEXT;
+ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS client_type TEXT NOT NULL DEFAULT 'web';
+ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS participant_identity TEXT;
+ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ;
+ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS voice_turns (
     turn_id TEXT NOT NULL,
@@ -78,3 +108,11 @@ CREATE INDEX IF NOT EXISTS idx_audit_user_created
     ON audit_events(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_worker_nonces_expires
     ON worker_request_nonces(expires_at);
+CREATE INDEX IF NOT EXISTS idx_kb_ownership_user
+    ON knowledge_base_ownership(owner_user_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_sessions_room
+    ON voice_sessions(room_name) WHERE room_name IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_sessions_one_open_per_user
+    ON voice_sessions(user_id) WHERE status IN ('created', 'active');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_sessions_livekit_job
+    ON voice_sessions(livekit_job_id) WHERE livekit_job_id IS NOT NULL;

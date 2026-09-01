@@ -25,4 +25,18 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户不存在",
         )
+    if user.status != "active" or int(payload.get("ver", 0)) != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录凭据版本已失效，请重新登录",
+        )
+    return user
+
+
+async def get_current_admin(user: AuthUser = Depends(get_current_user)) -> AuthUser:
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限",
+        )
     return user

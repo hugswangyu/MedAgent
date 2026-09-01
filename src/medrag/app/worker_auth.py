@@ -59,6 +59,14 @@ def authorize_worker_request(
         raise WorkerAuthorizationError("UNAUTHORIZED", "worker token 或 nonce 格式无效") from exc
     knowledge_base_id = str(claims["kid"])
     expires_at = datetime.fromtimestamp(float(claims["exp"]), tz=timezone.utc)
+    if not phase1_repository.validate_claimed_worker_binding(
+        session_id=session_id,
+        user_id=user_id,
+        knowledge_base_id=knowledge_base_id,
+    ):
+        raise WorkerAuthorizationError(
+            "SESSION_BINDING_MISMATCH", "Voice Session 未预建、未 claim 或已结束"
+        )
     accepted = phase1_repository.consume_worker_nonce(
         token_jti=token_jti,
         nonce=nonce_value,
@@ -69,11 +77,6 @@ def authorize_worker_request(
     )
     if not accepted:
         raise WorkerAuthorizationError("REPLAY_DETECTED", "重复请求 nonce 已被拒绝")
-    phase1_repository.bind_voice_session(
-        user_id=user_id,
-        session_id=session_id,
-        knowledge_base_id=knowledge_base_id,
-    )
     return WorkerPrincipal(
         user_id=user_id,
         session_id=session_id,

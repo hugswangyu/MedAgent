@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -27,6 +28,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 天
 WORKER_TOKEN_EXPIRE_SECONDS = 300
 WORKER_AUDIENCE = "medagent-internal"
+WORKER_BOOTSTRAP_AUDIENCE = "medagent-worker-bootstrap"
 WORKER_SCOPES = frozenset(
     {
         "safety:input",
@@ -45,6 +47,8 @@ class AuthUser:
     user_id: str
     username: str
     is_admin: bool = False
+    status: str = "active"
+    token_version: int = 1
 
 
 @dataclass(frozen=True)
@@ -164,6 +168,8 @@ def create_access_token(
     payload = {
         "sub": user_id,
         "username": username,
+        "is_admin": user.is_admin if isinstance(user, AuthUser) else False,
+        "ver": user.token_version if isinstance(user, AuthUser) else 1,
         "token_use": "access",
         "iat": now,
         "exp": expire,
@@ -234,6 +240,42 @@ def decode_worker_token(token: str) -> Optional[dict]:
     return payload
 
 
+def create_worker_bootstrap_token(
+    *, session_id: str, binding_version: int, expires_delta: Optional[timedelta] = None
+) -> str:
+    """签发仅可用于一次服务端绑定 claim 的短期凭据。"""
+
+    config = load_auth_config()
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sid": session_id,
+        "ver": binding_version,
+        "token_use": "worker_bootstrap",
+        "aud": WORKER_BOOTSTRAP_AUDIENCE,
+        "iat": now,
+        "exp": now + (expires_delta or timedelta(seconds=WORKER_TOKEN_EXPIRE_SECONDS)),
+        "jti": str(uuid.uuid4()),
+    }
+    return jwt.encode(payload, config.secret_key, algorithm=ALGORITHM)
+
+
+def decode_worker_bootstrap_token(token: str) -> Optional[dict]:
+    config = load_auth_config()
+    try:
+        payload = jwt.decode(
+            token,
+            config.secret_key,
+            algorithms=[ALGORITHM],
+            audience=WORKER_BOOTSTRAP_AUDIENCE,
+        )
+    except JWTError:
+        return None
+    required = {"sid", "ver", "jti", "exp"}
+    if payload.get("token_use") != "worker_bootstrap" or not required.issubset(payload):
+        return None
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # 用户管理
 # ---------------------------------------------------------------------------
@@ -246,6 +288,8 @@ def get_user(username: str) -> Optional[AuthUser]:
         user_id=user.user_id,
         username=user.username,
         is_admin=user.is_admin,
+        status=user.status,
+        token_version=user.token_version,
     )
 
 
@@ -257,6 +301,8 @@ def get_user_by_id(user_id: str) -> Optional[AuthUser]:
         user_id=user.user_id,
         username=user.username,
         is_admin=user.is_admin,
+        status=user.status,
+        token_version=user.token_version,
     )
 
 
@@ -264,11 +310,13 @@ def verify_user(username: str, plain_password: str) -> Optional[AuthUser]:
     user = phase1_repository.get_user_by_username(username)
     if user is None:
         return None
-    if verify_password(plain_password, user.password_hash):
+    if user.status == "active" and verify_password(plain_password, user.password_hash):
         return AuthUser(
             user_id=user.user_id,
             username=user.username,
             is_admin=user.is_admin,
+            status=user.status,
+            token_version=user.token_version,
         )
     return None
 
@@ -281,6 +329,8 @@ def create_user(username: str, password: str, is_admin: bool = False) -> Optiona
         user_id=user.user_id,
         username=user.username,
         is_admin=user.is_admin,
+        status=user.status,
+        token_version=user.token_version,
     )
 
 
@@ -293,16 +343,50 @@ def init_auth() -> None:
 
     load_auth_config()
     creds = load_credentials(_STORAGE_FILE)
-    phase1_repository.ensure_schema()
+    try:
+        phase1_repository.ensure_schema()
+    except phase1_repository.UserMigrationConflictError as exc:
+        _write_migration_conflict_report(exc.conflicts)
+        raise RuntimeError(
+            "用户迁移存在 normalized_username 冲突；已生成报告并停止启动"
+        ) from exc
     legacy_rows = []
+    grouped: dict[str, list[str]] = {}
     for user in creds.values():
+        normalized = phase1_repository.normalize_username(user.username)
+        grouped.setdefault(normalized, []).append(user.username)
+        existing = phase1_repository.get_user_by_username(user.username)
+        if existing is not None and existing.username != user.username:
+            grouped[normalized].append(existing.username)
         password_hash = (
             user.password if user.password.startswith("$2") else hash_password(user.password)
         )
         legacy_rows.append((user.username, password_hash, user.is_admin))
+    conflicts = [
+        {"normalized_username": key, "usernames": names}
+        for key, names in grouped.items()
+        if len(set(names)) > 1
+    ]
+    if conflicts:
+        _write_migration_conflict_report(conflicts)
+        raise RuntimeError(
+            "旧用户文件存在 normalized_username 冲突；已生成报告并停止迁移"
+        )
     imported = phase1_repository.import_legacy_users(legacy_rows)
     logger.info(
         "PostgreSQL 身份初始化完成：legacy_users=%s imported=%s legacy_file=preserved",
         len(legacy_rows),
         imported,
+    )
+
+
+def _write_migration_conflict_report(conflicts: list[dict]) -> None:
+    """把阻断迁移的冲突写到凭据文件旁，避免静默跳过用户。"""
+
+    report = settings.credentials_path.parent / "phase1_user_migration_conflicts.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps({"status": "blocked", "conflicts": conflicts}, ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
     )

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import uuid
 from datetime import timedelta
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-from medrag.app import auth_manager
+from medrag.app import auth_manager, dependencies
 from medrag.app.api import auth as auth_api
 from medrag.app.schemas import LoginRequest
 from medrag.auth import credentials
@@ -83,6 +85,7 @@ def test_valid_token_round_trip(monkeypatch):
     assert payload["sub"] == user_id
     assert payload["username"] == "alice"
     assert payload["token_use"] == "access"
+    assert payload["ver"] == 1
 
 
 def test_public_registration_defaults_off_in_prod(monkeypatch):
@@ -134,6 +137,47 @@ def test_init_auth_does_not_create_default_admin(monkeypatch):
 
     ensure_schema.assert_called_once_with()
     import_legacy_users.assert_called_once_with([])
+
+
+def test_access_token_version_mismatch_is_rejected(monkeypatch):
+    monkeypatch.setenv("MEDRAG_ENV", "test")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key")
+    user_id = str(uuid.uuid4())
+    token = auth_manager.create_access_token(
+        auth_manager.AuthUser(user_id=user_id, username="alice", token_version=1)
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "get_user_by_id",
+        lambda _: auth_manager.AuthUser(
+            user_id=user_id, username="alice", token_version=2
+        ),
+    )
+
+    async def resolve_user():
+        return await dependencies.get_current_user(
+            type("Credentials", (), {"credentials": token})()
+        )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(resolve_user())
+
+    assert exc_info.value.status_code == 401
+
+
+def test_migration_conflict_report_is_written(tmp_path, monkeypatch):
+    credentials_path = tmp_path / "users.json"
+    monkeypatch.setattr(
+        auth_manager, "settings", SimpleNamespace(credentials_path=credentials_path)
+    )
+
+    auth_manager._write_migration_conflict_report(
+        [{"normalized_username": "alice", "usernames": ["Alice", "alice"]}]
+    )
+
+    report = tmp_path / "phase1_user_migration_conflicts.json"
+    assert report.exists()
+    assert '"status": "blocked"' in report.read_text(encoding="utf-8")
 
 
 def test_legacy_credentials_helper_does_not_create_default_admin(monkeypatch):

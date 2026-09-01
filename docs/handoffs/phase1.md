@@ -2,157 +2,221 @@
 
 日期：2026-09-01  
 阶段：身份与数据基础  
-状态：代码、单元测试、静态检查与 PostgreSQL migration 验收完成；真实语音验收仍被外部凭据阻断  
-提交：未提交
+状态：**验收整改已完成，待复验**；真实语音仍未验收，不得据此进入 Phase 2
+提交：本文件所在的 Phase 1 验收整改提交（本地，不 push）
 
-## 实施边界
+## 边界与保留项
 
-1. 两个仓库继续位于 D:MedAgent 与 D:LiveRAG，没有迁仓。
-2. 保留 MedAgent 用户原有未提交修改：
-   - src/medrag/config/settings.py 的 load_dotenv(..., override=False)；
-   - fastapi-startup.err、fastapi-startup.log、handoff.md。
-3. 旧 user_credentials.json 只作为一次性导入源读取；不会被阶段 1 删除、覆盖或改写。
-4. 阶段 0 的四个 /internal/v1 能力路径、超时、幂等键和 envelope 保持兼容。
-5. 生产环境默认不再接受共享 internal API key；开发/迁移期仍可显式启用。
+1. 两个仓库仍位于 `D:\MedAgent` 与 `D:\LiveRAG`，没有迁仓。
+2. MedAgent 用户原有未提交内容继续保留且不纳入本轮提交：
+   - `src/medrag/config/settings.py`
+   - `fastapi-startup.err`
+   - `fastapi-startup.log`
+   - `handoff.md`
+3. 旧 `user_credentials.json` 仅作为一次性导入源读取，不删除、不覆盖、不回写。
+4. 阶段 0 的四个 `/internal/v1` 能力路径、冻结 envelope、超时与幂等键保持兼容。
+5. LightRAG SQLite 只保留知识库内部元数据；知识库所有权与 Voice Session 绑定的授权事实源为 PostgreSQL。
+
+## 整改后的权威数据流
+
+```mermaid
+flowchart LR
+    UI[LiveRAG 管理 API] -->|用户 JWT + 控制面服务密钥| CP[MedAgent Control Plane]
+    CP --> PG[(PostgreSQL<br/>用户/所有权/Voice Binding)]
+    UI --> LR[(LightRAG SQLite<br/>仅内部元数据)]
+    Worker[LiveKit Worker] -->|bootstrap JWT + sid/version/job/room| Claim[PG CAS Claim]
+    Claim --> PG
+    Claim -->|服务端绑定 + 短期 worker JWT| Worker
+    Worker -->|Bearer + 每请求 nonce| Cap[MedAgent /internal/v1]
+    Cap --> PG
+```
+
+- LiveRAG 不再使用 SQLite 的 `owner_user_id` 做授权判断。
+- LiveRAG worker 不再导入、实例化或查询 `VoiceSessionStore`。
+- LiveRAG 不再自签 worker token；token 只由 MedAgent 根据已 claim 的 PostgreSQL 绑定签发。
+- 控制面所有权/会话变更同时要求用户 JWT 与独立的 `MEDAGENT_CONTROL_PLANE_KEY`，防止用户绕过 LiveRAG 抢注 `kb_id`。
 
 ## 已完成
 
-### PostgreSQL 用户与 user_id
+### 用户身份与迁移契约
 
-- 新增 users 表，以 UUID user_id 为主键，username 只作为唯一登录名。
-- MedAgent 启动时幂等安装阶段 1 schema，并把旧 JSON 用户复制到 PostgreSQL。
-- 旧明文密码只在内存中转为 bcrypt 后写入 PostgreSQL，旧文件保持原样。
-- 登录、注册、/auth/me 响应均返回 user_id。
-- 访问 JWT 的 sub 已改为 user_id，另带只读 username claim；依赖按 user_id 查 PostgreSQL 用户。
+- PostgreSQL `users.user_id UUID` 为稳定身份主键，访问 JWT 使用 `sub=user_id`。
+- 新增 `normalized_username`、`status`、`token_version`。
+- 用户名使用 Unicode NFKC、去除首尾空白并 `casefold`；数据库最终建立唯一索引并设置 NOT NULL。
+- 迁移会检测大小写和 Unicode 等价冲突；冲突时停止启动并在凭据文件旁生成 `phase1_user_migration_conflicts.json`。
+- 登录只允许 `status=active`；每个访问 JWT 带 `ver`，请求时必须与数据库 `token_version` 一致。
+- 旧明文密码只在内存中升级为 bcrypt 后写入 PostgreSQL，旧文件保持原样。
 
-### 知识库所有权
+### PostgreSQL 知识库所有权
 
-- LiveRAG knowledge_bases 增加 owner_user_id，已有 SQLite 数据采用幂等 ALTER TABLE 升级。
-- 管理 API 的知识库列表、详情、修改、删除、文档、任务、预览和查询路径均按 JWT 当前 user_id 检查所有权。
-- 跨用户读取与“不存在”统一返回 404，避免通过错误差异枚举他人知识库。
-- 会话默认知识库配置改为 knowledge_base:{user_id}，不再由不同用户共享同一个配置键。
-- 升级前旧知识库不会被自动暴露给任意新用户。管理员需把既有 PostgreSQL users.user_id 配到 LIVERAG_LEGACY_OWNER_USER_ID 完成一次性认领；不配置时文件和索引原样保留但保持未认领。
+新增 `knowledge_base_ownership`：
+
+- `kb_id` 为主键；
+- `owner_user_id` 外键指向 `users.user_id`；
+- `status` 表示业务可见状态；
+- 列表、详情、修改、删除、文档、任务、预览和查询的授权均先查询 PostgreSQL；
+- 删除前先收紧 PostgreSQL 状态，内部删除失败时恢复为 active；
+- SQLite 中的 owner 字段不再参与授权。
 
 ### Voice Session 服务端绑定
 
-- LiveRAG voice_sessions 增加 user_id，创建、读取、刷新 token、turn、RAG context 和结束接口均校验当前用户。
-- 每个用户独立判断活动会话，不再由其他用户的活动通话阻塞。
-- room/job metadata 只允许提供 session_id。worker 必须回查服务端 SQLite 记录，并校验实际 room、会话状态、user_id 和 kb_id；metadata 中伪造的用户或知识库字段不会生效。
-- 运行状态写入当前 user_id，按用户读取活动知识库锁定。
+- 用户创建会话时，LiveRAG 先通过受保护控制面在 PostgreSQL 预建 binding。
+- PostgreSQL 记录 `session_id`、`user_id`、`knowledge_base_id`、`room_name`、`binding_version`、`livekit_job_id` 及客户端元数据。
+- room metadata 只包含 `session_id + binding_version`。
+- 只发给 Agent dispatch 的 metadata 额外包含短期 bootstrap JWT；bootstrap JWT 不含 `user_id` 或 `kb_id`。
+- worker 以 `session_id + expected binding_version + room_name + livekit_job_id` 调用 claim；PostgreSQL 通过状态、版本和空 job 条件执行一次性 CAS。
+- claim 成功后版本递增并写入 job；重复 claim、版本不匹配、room 不匹配或已结束会话均拒绝。
+- worker 后续只使用 claim 响应中的服务端绑定和 MedAgent 签发的短期 token。
+- 会话结束时状态和 `binding_version` 再次更新，使现有 worker token 立即失去有效 binding。
 
-### turn、evidence 与审计
+### worker metadata 默认 fail-closed
 
-scripts/phase1_identity_data.sql 新增：
+下列情况默认拒绝启动 Agent：
 
-- voice_sessions
-- voice_turns
-- evidence
-- audit_events
-- worker_request_nonces
+- room/job metadata 缺失；
+- metadata 不是合法 JSON；
+- 缺少 `session_id`、`binding_version` 或 bootstrap token；
+- 实际 room 缺失；
+- PostgreSQL claim 失败；
+- 绑定的知识库不存在或不可用。
 
-worker 调用 MedAgent 能力时：
+仅当环境为 `dev` 或 `test`，并显式设置 `LIVERAG_ALLOW_UNBOUND_WORKER=true` 时，才允许旧的无绑定开发模式。生产环境即使误设该开关也不会降级。
 
-- 先把 session_id 原子绑定到 token 的 sub 与 kid；
-- 每轮按 (session_id, turn_id) 写入或确认 voice_turns 绑定，允许不同会话各自使用 turn_1；
-- 医学检索及输出检查携带的统一 Evidence 写入 evidence；
-- 操作、结果、request id、延迟与错误码写入 audit_events；
-- 审计详情主动排除 text、query、content，不记录原始病例或完整模型文本。
+### turn、evidence、审计与防重放
 
-### 短期 worker token 与防重放
+PostgreSQL 表：
 
-- LiveRAG 与 MedAgent 使用同一个显式 JWT_SECRET_KEY。
-- worker token 使用 HS256，aud=medagent-internal，token_use=worker，默认有效期 300 秒。
-- token 必含 sub=user_id、sid=voice_session_id、kid=knowledge_base_id、scope、jti、iat、exp。
-- LiveRAG worker 按请求签发短期 token，并为每个 HTTP 请求生成新的 UUID X-Request-Nonce。
-- MedAgent 校验签名、audience、scope、sid 和 UUID 格式后，通过 PostgreSQL (token_jti, nonce) 主键原子消费 nonce。
-- 同一 token 与 nonce 的重放返回 REPLAY_DETECTED；使用新 nonce 的同幂等请求仍由阶段 0 幂等层返回首次结果。
-- 生产环境默认关闭共享 key；短期迁移可显式设置 MEDAGENT_ALLOW_LEGACY_INTERNAL_API_KEY=true。
+- `voice_turns`
+- `evidence`
+- `audit_events`
+- `worker_request_nonces`
+
+能力请求必须：
+
+- 使用 audience/scope/sid/kid/jti/exp 完整的短期 worker JWT；
+- 先验证对应 PostgreSQL binding 已 claim、仍为 active 且 user/kb 一致；
+- 每个 HTTP 请求携带新的 UUID `X-Request-Nonce`；
+- 通过 `(token_jti, nonce)` 主键原子消费 nonce，重复请求返回 `REPLAY_DETECTED`；
+- 审计详情排除 `text`、`query`、`content`，不保存完整病例或模型原文。
+
+bootstrap token 的重放由 PostgreSQL claim CAS 拒绝；worker token 默认 300 秒，并在接近到期时通过受保护接口轮换。
+
+### 旧全局接口封闭
+
+以下 LiveRAG 接口现在要求管理员身份；匿名请求被拒绝，普通用户写入返回 403：
+
+- `/model/config`
+- `/model/context-config`
+- `/model/effective-state`
+- `/prompt/soul`
+- `/session/messages`
+- `/session/rag-context`
+- `/session/turns`
+- `/session/clear`
+- `/rag/config`
+
+`/runtime/state` 仍允许已登录用户读取，但会移除属于其他用户的 active session 与 active voice state。
+
+## 关键配置
+
+两端：
+
+- `JWT_SECRET_KEY`：访问 JWT、bootstrap JWT 和 worker JWT 的强随机签名密钥。
+- `MEDAGENT_CONTROL_PLANE_KEY`：LiveRAG 管理服务调用 MedAgent 控制面变更接口的独立强随机服务密钥。
+- `MEDAGENT_CONTROL_BASE_URL`：可选；默认回退到 `MEDAGENT_INTERNAL_BASE_URL`，再回退到 `http://127.0.0.1:8000`。
+
+生产：
+
+- `MEDAGENT_ALLOW_LEGACY_INTERNAL_API_KEY` 保持 false 或不配置。
+- `LIVERAG_ALLOW_UNBOUND_WORKER` 保持 false 或不配置。
 
 ## 关键文件
 
 MedAgent：
 
-- scripts/phase1_identity_data.sql
-- src/medrag/infrastructure/storage/phase1_repository.py
-- src/medrag/app/auth_manager.py
-- src/medrag/app/worker_auth.py
-- src/medrag/app/api/internal_v1.py
-- tests/test_phase1_identity_data.py
+- `scripts/phase1_identity_data.sql`
+- `src/medrag/infrastructure/storage/phase1_repository.py`
+- `src/medrag/app/auth_manager.py`
+- `src/medrag/app/dependencies.py`
+- `src/medrag/app/worker_auth.py`
+- `src/medrag/app/api/control_v1.py`
+- `tests/test_phase1_identity_data.py`
+- `tests/test_auth_security.py`
 
 LiveRAG：
 
-- liverag/security.py
-- liverag/rag/metadata_store.py
-- liverag/voice/session.py
-- liverag/api/server.py
-- liverag/main.py
-- liverag/agent/tool/medical_client.py
-- tests/test_phase1_identity.py
+- `liverag/control_plane.py`
+- `liverag/security.py`
+- `liverag/voice/session.py`
+- `liverag/api/server.py`
+- `liverag/main.py`
+- `liverag/agent/tool/medical_client.py`
+- `tests/test_phase1_identity.py`
 
 ## 部署与升级顺序
 
-1. 备份 PostgreSQL 与 ~/.LiveRAG/，不要删除旧凭据、SQLite、知识库目录或索引。
-2. 在 MedAgent PostgreSQL 执行 scripts/phase1_identity_data.sql，并启用 ON_ERROR_STOP。
-3. 两端配置同一个随机强 JWT_SECRET_KEY。
-4. 启动 MedAgent。它会再次幂等检查 schema，并把旧 JSON 用户导入 users。
-5. 查询要承接旧 LiveRAG 知识库的 users.user_id，配置 LIVERAG_LEGACY_OWNER_USER_ID。
-6. 首次启动 LiveRAG 管理 API/RAG 服务，完成 SQLite owner_user_id、Voice Session user_id 列升级与旧库认领。
-7. 确认登录返回的 JWT sub 是 UUID，再验证用户只能看到和操作自己的知识库。
-8. 生产环境保持 MEDAGENT_ALLOW_LEGACY_INTERNAL_API_KEY=false 或不配置；确认 worker 请求使用 Bearer token 与 X-Request-Nonce。
+1. 备份 PostgreSQL、LiveRAG SQLite、知识库目录、索引和旧凭据文件。
+2. 执行 `scripts/phase1_identity_data.sql`，随后启动 MedAgent，让 `ensure_schema()` 完成用户名规范化、冲突报告和唯一索引。
+3. 若生成 `phase1_user_migration_conflicts.json`，停止部署并人工解决冲突；不得跳过或自动合并。
+4. 两端配置相同的强 `JWT_SECRET_KEY`，并配置相同的独立 `MEDAGENT_CONTROL_PLANE_KEY`。
+5. 先启动 PostgreSQL 与 MedAgent，再启动 LiveRAG 管理 API/RAG 服务，最后启动 LiveKit worker。
+6. 通过 LiveRAG 创建新知识库；创建成功后必须能在 PostgreSQL `knowledge_base_ownership` 查到 owner。
+7. 对部署前已有知识库，使用受保护控制面按确认后的真实 owner 做一次性登记；不要再以 SQLite owner 字段作为授权依据。
+8. 创建 Voice Session 后确认 PostgreSQL 先出现 status=created 的记录；worker 启动后确认同一记录变为 active、job 被写入且 version 增加。
+9. 确认生产未开启 legacy internal key 或 unbound worker 开关。
 
 ## 验证结果
 
-MedAgent 阶段 0/1 定向回归：
+MedAgent Phase 1/认证定向：
 
-    31 passed, 1 warning
+    26 passed, 1 warning
 
 MedAgent 全量：
 
-    218 passed, 11 failed, 1 warning
+    228 passed, 11 failed, 1 warning
 
-11 个失败与阶段 0 交接一致，仍位于本阶段未修改的旧模块：
+11 个失败与整改前一致，位于本轮未修改的旧模块：
 
-- tests/test_eval_script.py：7 个；
-- tests/test_memory_system.py：2 个；
-- tests/test_query_routing_cases.py：1 个；
-- tests/test_resilience.py：1 个。
+- `tests/test_eval_script.py`：7 个；
+- `tests/test_memory_system.py`：2 个；
+- `tests/test_query_routing_cases.py`：1 个；
+- `tests/test_resilience.py`：1 个。
 
-LiveRAG：
+LiveRAG 全量：
 
     uv run pytest -q
-    22 passed
+    35 passed, 2 warnings
 
     uv run ruff check liverag tests
     All checks passed!
 
-    uv run python -m compileall -q liverag tests
-    通过
+静态与格式：
 
-两仓 git diff --check 与 Python compileall 均通过。
+- 两仓 Python `compileall` 通过；
+- MedAgent 本轮修改文件 ruff 通过；
+- 两仓 `git diff --check` 在修正文档后通过。
 
-PostgreSQL 16 临时真实实例：
+PostgreSQL 16 隔离真实实例：
 
-- 首次 migration 创建 users、voice_sessions、voice_turns、evidence、audit_events、worker_request_nonces；
-- 第二次 migration 成功，验证幂等；
-- 表清单核对通过；
-- 两个不同 session 均成功写入 turn_1，验证 (session_id, turn_id) 复合主键不会跨会话冲突；
-- 验收临时容器已停止并由 --rm 自动删除。
-
-LiveRAG OpenAPI smoke test 确认 /voice/sessions 与 /rag/knowledge-bases 均带 Bearer security requirement；临时运行目录已清理。
+- migration 连续执行两次成功，验证幂等；
+- LiveKit job CAS 首次 claim 数量为 1；
+- 使用相同 `binding_version` 重复 claim 数量为 0；
+- 验收事务已回滚；
+- 临时容器使用 `--rm`，验收后停止并自动删除。
 
 ## 明确未完成：真实语音验收
 
-**真实语音验收没有通过，也没有被本阶段声明为通过。**
+**真实语音验收没有完成，也没有被声明为通过。**
 
-当前仍缺少或未提供 LiveKit、真实 STT、Voice LLM、TTS 等外部凭据，因此只完成了代码、HTTP 契约、token、nonce、SQLite/PostgreSQL 与离线测试。
+当前仍缺少 LiveKit、真实 STT、Voice LLM、TTS 等外部凭据，因此本轮只完成代码、HTTP 契约、PostgreSQL migration/CAS、token/nonce 与离线测试。
 
-凭据提供后必须继续执行：
+凭据提供后仍必须完成：
 
-1. 同时启动 PostgreSQL、MedAgent、LiveRAG 管理 API/RAG service、LiveKit worker 和真实语音 provider。
-2. 用两个真实登录用户验证知识库列表、文档、查询和 Voice Session 全链路互相不可见。
-3. 抓取真实 worker 请求，确认 sub/sid/kid/aud/scope/jti、五分钟有效期和每请求 nonce。
-4. 重放同一 Bearer token + nonce，确认被 PostgreSQL 防重放拒绝；以新 nonce 重试同一幂等请求，确认返回首次结果。
+1. 启动 PostgreSQL、MedAgent、LiveRAG 管理 API/RAG service、LiveKit worker 和真实语音 provider。
+2. 用两个真实用户验证知识库、文档、查询和 Voice Session 全链路互不可见。
+3. 抓取真实 worker 请求，核对 claim、短期 token、轮换和每请求 nonce。
+4. 重放同一 bootstrap claim，确认 CAS 拒绝；重放同一 Bearer + nonce，确认 PostgreSQL 防重放拒绝。
 5. 用实际音频复验阶段 0 急症旁路、安全 TTS、医学检索、个人库和三个确定性工具。
 6. 采集首响、100 turn、15 分钟并发/稳定性与审计表对账数据。
 
-在上述工作完成前，不得把“真实麦克风音频”“真实 provider”或“生产端到端”标记为已验收。
+在上述真实凭据验收完成前，不得把“真实麦克风音频”“真实 provider”或“生产端到端”标记为已验收。
