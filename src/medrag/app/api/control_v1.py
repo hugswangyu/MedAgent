@@ -40,6 +40,21 @@ def require_control_plane_key(
 CONTROL_PLANE_AUTH = Depends(require_control_plane_key)
 
 
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def _created_lease_seconds() -> int:
+    return _positive_env_int("MEDAGENT_VOICE_SESSION_CREATED_LEASE_SECONDS", 120)
+
+
+def _active_lease_seconds() -> int:
+    return _positive_env_int("MEDAGENT_VOICE_SESSION_LEASE_SECONDS", 120)
+
+
 class KnowledgeBaseRegistration(BaseModel):
     kb_id: str
 
@@ -76,6 +91,7 @@ def _worker_claims(
         session_id=str(claims["sid"]),
         user_id=str(claims["sub"]),
         knowledge_base_id=str(claims["kid"]),
+        livekit_job_id=str(claims["job"]),
     ):
         raise HTTPException(status_code=409, detail="worker binding is no longer active")
     return claims
@@ -159,6 +175,7 @@ async def create_voice_session(
             participant_identity=payload.participant_identity,
             token_expires_at=payload.token_expires_at,
             metadata=payload.metadata,
+            lease_seconds=_created_lease_seconds(),
         )
     except IntegrityError as exc:
         raise HTTPException(status_code=409, detail="voice session already exists or user has an open session") from exc
@@ -207,6 +224,7 @@ async def claim_voice_session(
         expected_version=payload.binding_version,
         room_name=payload.room_name,
         livekit_job_id=payload.livekit_job_id,
+        lease_seconds=_active_lease_seconds(),
     )
     if binding is None:
         raise HTTPException(status_code=409, detail="voice session already claimed or binding mismatch")
@@ -214,6 +232,7 @@ async def claim_voice_session(
         user_id=binding["user_id"],
         session_id=binding["session_id"],
         knowledge_base_id=binding["knowledge_base_id"],
+        livekit_job_id=binding["livekit_job_id"],
     )
     return binding
 
@@ -223,11 +242,20 @@ async def refresh_worker_token(
     credentials: HTTPAuthorizationCredentials | None = Depends(bootstrap_bearer),
 ) -> dict[str, str]:
     claims = _worker_claims(credentials)
+    if not phase1_repository.renew_voice_session_lease(
+        session_id=str(claims["sid"]),
+        user_id=str(claims["sub"]),
+        knowledge_base_id=str(claims["kid"]),
+        livekit_job_id=str(claims["job"]),
+        lease_seconds=_active_lease_seconds(),
+    ):
+        raise HTTPException(status_code=409, detail="worker lease cannot be renewed")
     return {
         "worker_token": create_worker_token(
             user_id=str(claims["sub"]),
             session_id=str(claims["sid"]),
             knowledge_base_id=str(claims["kid"]),
+            livekit_job_id=str(claims["job"]),
         )
     }
 
@@ -241,3 +269,10 @@ async def worker_end_voice_session(
         session_id=str(claims["sid"]), user_id=str(claims["sub"])
     )
     return {"status": "ended"}
+
+
+@router.post("/internal/voice-sessions/cleanup")
+async def cleanup_stale_voice_sessions(
+    _service: None = CONTROL_PLANE_AUTH,
+) -> dict[str, int]:
+    return {"expired": phase1_repository.expire_stale_voice_sessions()}

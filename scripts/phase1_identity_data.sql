@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS voice_sessions (
     client_type TEXT NOT NULL DEFAULT 'web',
     participant_identity TEXT,
     token_expires_at TIMESTAMPTZ,
+    lease_expires_at TIMESTAMPTZ,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -46,7 +47,11 @@ ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS client_id TEXT;
 ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS client_type TEXT NOT NULL DEFAULT 'web';
 ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS participant_identity TEXT;
 ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ;
+ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
 ALTER TABLE voice_sessions ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+UPDATE voice_sessions
+SET lease_expires_at = updated_at + INTERVAL '5 minutes'
+WHERE status IN ('created', 'active') AND lease_expires_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS voice_turns (
     turn_id TEXT NOT NULL,
@@ -116,3 +121,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_sessions_one_open_per_user
     ON voice_sessions(user_id) WHERE status IN ('created', 'active');
 CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_sessions_livekit_job
     ON voice_sessions(livekit_job_id) WHERE livekit_job_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_voice_sessions_open_lease
+    ON voice_sessions(lease_expires_at) WHERE status IN ('created', 'active');

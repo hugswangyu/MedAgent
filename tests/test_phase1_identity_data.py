@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import uuid
 import asyncio
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -23,6 +24,7 @@ def test_worker_token_is_short_lived_and_bound_to_user_session_kb(monkeypatch):
         user_id=user_id,
         session_id="vs_1",
         knowledge_base_id="kb_1",
+        livekit_job_id="job_1",
     )
 
     payload = auth_manager.decode_worker_token(token)
@@ -30,6 +32,7 @@ def test_worker_token_is_short_lived_and_bound_to_user_session_kb(monkeypatch):
     assert payload["sub"] == user_id
     assert payload["sid"] == "vs_1"
     assert payload["kid"] == "kb_1"
+    assert payload["job"] == "job_1"
     assert payload["aud"] == auth_manager.WORKER_AUDIENCE
     assert payload["exp"] - payload["iat"] <= 300
 
@@ -42,6 +45,7 @@ def test_worker_request_requires_preclaimed_binding_and_consumes_nonce_once(monk
         "sub": user_id,
         "sid": "vs_1",
         "kid": "kb_1",
+        "job": "job_1",
         "scope": "safety:input",
         "jti": token_jti,
         "exp": datetime.now(timezone.utc).timestamp() + 300,
@@ -76,6 +80,7 @@ def test_worker_request_requires_preclaimed_binding_and_consumes_nonce_once(monk
         user_id=user_id,
         session_id="vs_1",
         knowledge_base_id="kb_1",
+        livekit_job_id="job_1",
     )
     with pytest.raises(worker_auth.WorkerAuthorizationError) as exc_info:
         worker_auth.authorize_worker_request(
@@ -92,6 +97,7 @@ def test_worker_request_rejects_unclaimed_binding_before_nonce(monkeypatch):
         "sub": str(uuid.uuid4()),
         "sid": "vs_1",
         "kid": "kb_1",
+        "job": "job_1",
         "scope": "safety:input",
         "jti": str(uuid.uuid4()),
         "exp": datetime.now(timezone.utc).timestamp() + 300,
@@ -198,6 +204,7 @@ def test_worker_claim_uses_postgres_cas_and_server_binding(monkeypatch):
             "session_id": "vs_1",
             "user_id": user_id,
             "knowledge_base_id": "kb_pg",
+            "livekit_job_id": "job_1",
         }
     )
     monkeypatch.setattr(phase1_repository, "claim_voice_session_binding", claim)
@@ -220,9 +227,40 @@ def test_worker_claim_uses_postgres_cas_and_server_binding(monkeypatch):
         expected_version=4,
         room_name="room_1",
         livekit_job_id="job_1",
+        lease_seconds=120,
     )
     assert result["worker_token"] == "worker-token"
     assert result["knowledge_base_id"] == "kb_pg"
+
+
+def test_expire_stale_voice_sessions_releases_open_leases(monkeypatch):
+    executed = []
+
+    class Cursor:
+        rowcount = 2
+
+        def execute(self, query, params=None):
+            executed.append((query, params))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    @contextmanager
+    def fake_get_conn():
+        yield Connection()
+
+    monkeypatch.setattr(phase1_repository, "get_conn", fake_get_conn)
+
+    assert phase1_repository.expire_stale_voice_sessions() == 2
+    assert "status = 'expired'" in executed[0][0]
+    assert "lease_expires_at <= NOW()" in executed[0][0]
 
 
 def test_control_plane_routes_are_not_anonymous():

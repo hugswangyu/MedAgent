@@ -63,6 +63,7 @@ def authorize_worker_request(
         session_id=session_id,
         user_id=user_id,
         knowledge_base_id=knowledge_base_id,
+        livekit_job_id=str(claims["job"]),
     ):
         raise WorkerAuthorizationError(
             "SESSION_BINDING_MISMATCH", "Voice Session 未预建、未 claim 或已结束"

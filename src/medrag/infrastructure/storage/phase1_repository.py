@@ -277,16 +277,20 @@ def create_voice_session_binding(
     participant_identity: str | None = None,
     token_expires_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
+    lease_seconds: int = 120,
 ) -> dict[str, Any]:
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            _expire_stale_voice_sessions(cur)
             cur.execute(
                 """
                 INSERT INTO voice_sessions(
                     session_id, user_id, knowledge_base_id, room_name, client_id,
-                    client_type, participant_identity, token_expires_at, metadata
+                    client_type, participant_identity, token_expires_at, metadata,
+                    lease_expires_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        NOW() + (%s * INTERVAL '1 second'))
                 RETURNING *
                 """,
                 (
@@ -299,6 +303,7 @@ def create_voice_session_binding(
                     participant_identity,
                     token_expires_at,
                     json.dumps(metadata or {}, ensure_ascii=False),
+                    lease_seconds,
                 ),
             )
             row = cur.fetchone()
@@ -326,6 +331,7 @@ def claim_voice_session_binding(
     expected_version: int,
     room_name: str,
     livekit_job_id: str,
+    lease_seconds: int = 120,
 ) -> dict[str, Any] | None:
     """以 binding_version + 空 job 条件执行一次 LiveKit job CAS。"""
 
@@ -335,7 +341,8 @@ def claim_voice_session_binding(
                 """
                 UPDATE voice_sessions
                 SET livekit_job_id = %s, status = 'active',
-                    binding_version = binding_version + 1, updated_at = NOW()
+                    binding_version = binding_version + 1, updated_at = NOW(),
+                    lease_expires_at = NOW() + (%s * INTERVAL '1 second')
                 WHERE session_id = %s
                   AND binding_version = %s
                   AND room_name = %s
@@ -343,14 +350,24 @@ def claim_voice_session_binding(
                   AND livekit_job_id IS NULL
                 RETURNING *
                 """,
-                (livekit_job_id, session_id, expected_version, room_name),
+                (
+                    livekit_job_id,
+                    lease_seconds,
+                    session_id,
+                    expected_version,
+                    room_name,
+                ),
             )
             row = cur.fetchone()
     return _voice_binding(row) if row else None
 
 
 def validate_claimed_worker_binding(
-    *, session_id: str, user_id: str, knowledge_base_id: str
+    *,
+    session_id: str,
+    user_id: str,
+    knowledge_base_id: str,
+    livekit_job_id: str,
 ) -> bool:
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -358,11 +375,61 @@ def validate_claimed_worker_binding(
                 """
                 SELECT 1 FROM voice_sessions
                 WHERE session_id = %s AND user_id = %s AND knowledge_base_id = %s
-                  AND status = 'active' AND livekit_job_id IS NOT NULL
+                  AND status = 'active' AND livekit_job_id = %s
+                  AND lease_expires_at > NOW()
                 """,
-                (session_id, user_id, knowledge_base_id),
+                (session_id, user_id, knowledge_base_id, livekit_job_id),
             )
             return cur.fetchone() is not None
+
+
+def renew_voice_session_lease(
+    *,
+    session_id: str,
+    user_id: str,
+    knowledge_base_id: str,
+    livekit_job_id: str,
+    lease_seconds: int = 120,
+) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE voice_sessions
+                SET lease_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                    updated_at = NOW()
+                WHERE session_id = %s AND user_id = %s AND knowledge_base_id = %s
+                  AND livekit_job_id = %s AND status = 'active'
+                  AND lease_expires_at > NOW()
+                """,
+                (
+                    lease_seconds,
+                    session_id,
+                    user_id,
+                    knowledge_base_id,
+                    livekit_job_id,
+                ),
+            )
+            return cur.rowcount == 1
+
+
+def expire_stale_voice_sessions() -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            return _expire_stale_voice_sessions(cur)
+
+
+def _expire_stale_voice_sessions(cur: Any) -> int:
+    cur.execute(
+        """
+        UPDATE voice_sessions
+        SET status = 'expired', ended_at = COALESCE(ended_at, NOW()),
+            updated_at = NOW(), binding_version = binding_version + 1
+        WHERE status IN ('created', 'active')
+          AND lease_expires_at <= NOW()
+        """
+    )
+    return max(cur.rowcount, 0)
 
 
 def end_voice_session_binding(*, session_id: str, user_id: str) -> bool:

@@ -2,7 +2,7 @@
 
 日期：2026-09-01  
 阶段：身份与数据基础  
-状态：**验收整改已完成，待复验**；真实语音仍未验收，不得据此进入 Phase 2
+状态：**No-Go；Voice Session 生命周期整改已完成，待复验**；真实语音仍未验收，不得据此进入 Phase 2
 提交：本文件所在的 Phase 1 验收整改提交（本地，不 push）
 
 ## 边界与保留项
@@ -58,6 +58,10 @@ flowchart LR
 - 删除前先收紧 PostgreSQL 状态，内部删除失败时恢复为 active；
 - SQLite 中的 owner 字段不再参与授权。
 
+本阶段冻结的是“PostgreSQL 为所有权授权事实源”这一边界。完整的跨 PostgreSQL、
+SQLite 和文件系统状态机（`provisioning → ready → deleting → deleted/error`）明确后移，
+不在本次小范围生命周期整改中扩展；当前仍使用 `active/deleted` 与即时补偿。
+
 ### Voice Session 服务端绑定
 
 - 用户创建会话时，LiveRAG 先通过受保护控制面在 PostgreSQL 预建 binding。
@@ -68,6 +72,12 @@ flowchart LR
 - claim 成功后版本递增并写入 job；重复 claim、版本不匹配、room 不匹配或已结束会话均拒绝。
 - worker 后续只使用 claim 响应中的服务端绑定和 MedAgent 签发的短期 token。
 - 会话结束时状态和 `binding_version` 再次更新，使现有 worker token 立即失去有效 binding。
+- `created/active` 会话均带 PostgreSQL `lease_expires_at`；claim 同时写入 active lease。
+- worker 在 claim 后立即注册幂等释放回调；AgentSession 成功启动后才启动后台 heartbeat。初始化失败时不会留下孤儿 heartbeat，并由释放回调与 lease 到期双重兜底。
+- heartbeat 独立于医疗能力调用，通过 `/worker/token` 同时续租并轮换短期 token。
+- finalizer 第一优先级是结束 PostgreSQL binding；history 压缩失败只记录结果，不再阻止结束。
+- MedAgent cleanup 将过期 `created/active` 转为 `expired` 并递增版本，从而释放“每用户一个开放会话”的唯一索引。
+- LiveRAG 启动及后台 cleanup loop 均调用受服务密钥保护的 PostgreSQL cleanup 接口；创建新会话前仓储也会回收过期 lease。
 
 ### worker metadata 默认 fail-closed
 
@@ -99,7 +109,8 @@ PostgreSQL 表：
 - 通过 `(token_jti, nonce)` 主键原子消费 nonce，重复请求返回 `REPLAY_DETECTED`；
 - 审计详情排除 `text`、`query`、`content`，不保存完整病例或模型原文。
 
-bootstrap token 的重放由 PostgreSQL claim CAS 拒绝；worker token 默认 300 秒，并在接近到期时通过受保护接口轮换。
+bootstrap token 的重放由 PostgreSQL claim CAS 拒绝；worker token 默认 300 秒，
+后台 heartbeat 默认每 30 秒通过受保护接口续租并轮换，不依赖通话期间是否发生医疗能力调用。
 
 ### 旧全局接口封闭
 
@@ -124,6 +135,9 @@ bootstrap token 的重放由 PostgreSQL claim CAS 拒绝；worker token 默认 3
 - `JWT_SECRET_KEY`：访问 JWT、bootstrap JWT 和 worker JWT 的强随机签名密钥。
 - `MEDAGENT_CONTROL_PLANE_KEY`：LiveRAG 管理服务调用 MedAgent 控制面变更接口的独立强随机服务密钥。
 - `MEDAGENT_CONTROL_BASE_URL`：可选；默认回退到 `MEDAGENT_INTERNAL_BASE_URL`，再回退到 `http://127.0.0.1:8000`。
+- `MEDAGENT_VOICE_SESSION_CREATED_LEASE_SECONDS`：created lease，默认 120 秒。
+- `MEDAGENT_VOICE_SESSION_LEASE_SECONDS`：active lease，默认 120 秒。
+- `LIVERAG_WORKER_HEARTBEAT_SECONDS`：worker 后台续租间隔，默认 30 秒，应显著小于 active lease。
 
 生产：
 
@@ -162,18 +176,19 @@ LiveRAG：
 5. 先启动 PostgreSQL 与 MedAgent，再启动 LiveRAG 管理 API/RAG 服务，最后启动 LiveKit worker。
 6. 通过 LiveRAG 创建新知识库；创建成功后必须能在 PostgreSQL `knowledge_base_ownership` 查到 owner。
 7. 对部署前已有知识库，使用受保护控制面按确认后的真实 owner 做一次性登记；不要再以 SQLite owner 字段作为授权依据。
-8. 创建 Voice Session 后确认 PostgreSQL 先出现 status=created 的记录；worker 启动后确认同一记录变为 active、job 被写入且 version 增加。
-9. 确认生产未开启 legacy internal key 或 unbound worker 开关。
+8. 创建 Voice Session 后确认 PostgreSQL 先出现 status=created 和 created lease；worker 启动后确认同一记录变为 active、job 被写入、version 增加且 heartbeat 持续延长 lease。
+9. 停止 worker 或停止 heartbeat，等待 lease 到期并运行 cleanup；确认状态转为 expired，且同一用户可以创建新会话。
+10. 确认生产未开启 legacy internal key 或 unbound worker 开关。
 
 ## 验证结果
 
 MedAgent Phase 1/认证定向：
 
-    26 passed, 1 warning
+    27 passed, 1 warning
 
 MedAgent 全量：
 
-    228 passed, 11 failed, 1 warning
+    229 passed, 11 failed, 1 warning
 
 11 个失败与整改前一致，位于本轮未修改的旧模块：
 
@@ -185,7 +200,7 @@ MedAgent 全量：
 LiveRAG 全量：
 
     uv run pytest -q
-    35 passed, 2 warnings
+    38 passed, 2 warnings
 
     uv run ruff check liverag tests
     All checks passed!
@@ -199,8 +214,9 @@ LiveRAG 全量：
 PostgreSQL 16 隔离真实实例：
 
 - migration 连续执行两次成功，验证幂等；
-- LiveKit job CAS 首次 claim 数量为 1；
-- 使用相同 `binding_version` 重复 claim 数量为 0；
+- LiveKit job CAS 首次 claim 数量为 1，使用相同 `binding_version` 重复 claim 数量为 0；
+- 过期 active lease 被更新为 expired；
+- 过期会话释放唯一索引后，同一用户成功插入新的 created 会话；
 - 验收事务已回滚；
 - 临时容器使用 `--rm`，验收后停止并自动删除。
 

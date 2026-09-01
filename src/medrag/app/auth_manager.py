@@ -194,6 +194,7 @@ def create_worker_token(
     user_id: str,
     session_id: str,
     knowledge_base_id: str,
+    livekit_job_id: str,
     scopes: set[str] | frozenset[str] = WORKER_SCOPES,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
@@ -211,6 +212,7 @@ def create_worker_token(
         "sub": user_id,
         "sid": session_id,
         "kid": knowledge_base_id,
+        "job": livekit_job_id,
         "scope": " ".join(sorted(requested_scopes)),
         "token_use": "worker",
         "aud": WORKER_AUDIENCE,
@@ -234,7 +236,7 @@ def decode_worker_token(token: str) -> Optional[dict]:
         return None
     if payload.get("token_use") != "worker":
         return None
-    required = {"sub", "sid", "kid", "scope", "jti", "exp"}
+    required = {"sub", "sid", "kid", "job", "scope", "jti", "exp"}
     if not required.issubset(payload):
         return None
     return payload
