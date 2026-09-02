@@ -12,7 +12,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from typing import Any, Awaitable, Callable
 
-from medrag.contracts.phase0 import CapabilityEnvelope, Evidence
+from medcontracts.phase0 import CapabilityEnvelope, Evidence
 from medrag.rag.safety_guard import RED_SIGNALS
 from medrag.tools import get_tool_registry
 

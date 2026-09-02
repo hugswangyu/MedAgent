@@ -16,7 +16,7 @@ from medrag.app.worker_auth import (
     allow_legacy_internal_key,
     authorize_worker_request,
 )
-from medrag.contracts.phase0 import (
+from medcontracts.phase0 import (
     CapabilityEnvelope,
     InputCheckRequest,
     MedicalRetrieveRequest,

@@ -1,0 +1,1331 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LiveRAG 实时语音原型</title>
+    <style>
+      :root {
+        --background: #fff;
+        --foreground: #171717;
+        --muted: #f5f5f5;
+        --muted-foreground: #737373;
+        --border: #e5e5e5;
+        --input: #e5e5e5;
+        --accent: #002cf2;
+        --accent-soft: rgba(0, 44, 242, 0.08);
+        --danger: #d92d20;
+        --success: #16803c;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        overflow: hidden;
+        background: var(--background);
+        color: var(--foreground);
+      }
+
+      button,
+      textarea,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .voice-shell {
+        position: relative;
+        height: 100svh;
+        min-height: 680px;
+        overflow: hidden;
+        background:
+          linear-gradient(#fff 0%, rgba(255, 255, 255, 0) 16%),
+          linear-gradient(180deg, #fff 0%, #fbfbfb 100%);
+      }
+
+      .top-strip {
+        position: absolute;
+        top: 20px;
+        right: 24px;
+        left: 24px;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        pointer-events: none;
+      }
+
+      .brand,
+      .top-actions {
+        pointer-events: auto;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
+        border-radius: 999px;
+        background: var(--foreground);
+        color: #fff;
+      }
+
+      .bars {
+        display: flex;
+        height: 16px;
+        align-items: center;
+        gap: 3px;
+      }
+
+      .bars i {
+        width: 3px;
+        border-radius: 999px;
+        background: currentColor;
+      }
+
+      .bars i:nth-child(1) {
+        height: 8px;
+      }
+
+      .bars i:nth-child(2) {
+        height: 16px;
+      }
+
+      .bars i:nth-child(3) {
+        height: 11px;
+      }
+
+      .bars i:nth-child(4) {
+        height: 6px;
+      }
+
+      .brand strong {
+        display: block;
+        font-size: 14px;
+        line-height: 1.1;
+      }
+
+      .brand span {
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
+
+      .top-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .pill,
+      .soft-button {
+        display: inline-flex;
+        min-height: 34px;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.86);
+        color: var(--muted-foreground);
+        padding: 7px 12px;
+        font-size: 12px;
+        backdrop-filter: blur(14px);
+        white-space: nowrap;
+      }
+
+      .soft-button {
+        color: var(--foreground);
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--success);
+        box-shadow: 0 0 0 4px rgba(22, 128, 60, 0.1);
+      }
+
+      .stage {
+        position: absolute;
+        inset: 0 0 146px;
+        display: grid;
+        place-items: center;
+        padding: 96px 18px 24px;
+        transition: transform 320ms ease, opacity 320ms ease;
+      }
+
+      .voice-shell.chat-open .stage {
+        inset: 78px 0 auto;
+        height: 108px;
+        padding: 0;
+        transform: none;
+      }
+
+      .visualizer-wrap {
+        display: grid;
+        place-items: center;
+        text-align: center;
+      }
+
+      .visualizer {
+        position: relative;
+        display: grid;
+        width: min(450px, 70vw);
+        height: min(450px, 70vw);
+        place-items: center;
+        border-radius: 50%;
+      }
+
+      .voice-shell.chat-open .visualizer {
+        width: 90px;
+        height: 90px;
+      }
+
+      .visualizer::before,
+      .visualizer::after {
+        position: absolute;
+        content: "";
+        border: 1px solid rgba(0, 44, 242, 0.08);
+        border-radius: inherit;
+      }
+
+      .visualizer::before {
+        inset: 14%;
+        background: radial-gradient(circle, rgba(0, 44, 242, 0.06), rgba(255, 255, 255, 0) 64%);
+      }
+
+      .visualizer::after {
+        inset: 0;
+        animation: breathe 2.2s ease-in-out infinite;
+      }
+
+      .voice-shell.chat-open .visualizer::before,
+      .voice-shell.chat-open .visualizer::after {
+        display: none;
+      }
+
+      .core {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        width: 118px;
+        height: 118px;
+        place-items: center;
+        border: 1px solid var(--input);
+        border-radius: 34px;
+        background: var(--background);
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.08);
+      }
+
+      .voice-shell.chat-open .core {
+        width: 90px;
+        height: 90px;
+        border-radius: 28px;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.08);
+      }
+
+      .wave {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        color: var(--accent);
+      }
+
+      .wave span {
+        width: 6px;
+        border-radius: 999px;
+        background: currentColor;
+        animation: pulse 1.05s ease-in-out infinite;
+      }
+
+      .wave span:nth-child(1) {
+        height: 18px;
+      }
+
+      .wave span:nth-child(2) {
+        height: 38px;
+        animation-delay: 0.1s;
+      }
+
+      .wave span:nth-child(3) {
+        height: 58px;
+        animation-delay: 0.2s;
+      }
+
+      .wave span:nth-child(4) {
+        height: 34px;
+        animation-delay: 0.3s;
+      }
+
+      .wave span:nth-child(5) {
+        height: 22px;
+        animation-delay: 0.4s;
+      }
+
+      .listening {
+        margin: -20px 0 0;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .hint {
+        margin: 8px 0 0;
+        color: var(--muted-foreground);
+        font-size: 13px;
+      }
+
+      .voice-shell.chat-open .listening,
+      .voice-shell.chat-open .hint {
+        display: none;
+      }
+
+      @keyframes breathe {
+        0%,
+        100% {
+          transform: scale(0.92);
+          opacity: 0.25;
+        }
+
+        50% {
+          transform: scale(1);
+          opacity: 0.75;
+        }
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          transform: scaleY(0.5);
+          opacity: 0.5;
+        }
+
+        50% {
+          transform: scaleY(1);
+          opacity: 1;
+        }
+      }
+
+      .live-preview {
+        position: absolute;
+        right: 18px;
+        bottom: 138px;
+        left: 18px;
+        z-index: 18;
+        display: flex;
+        justify-content: center;
+        pointer-events: none;
+        transition: opacity 220ms ease, transform 220ms ease;
+      }
+
+      .live-preview::before,
+      .live-preview::after {
+        position: absolute;
+        right: 0;
+        left: 0;
+        z-index: 1;
+        height: 30px;
+        content: "";
+        pointer-events: none;
+        backdrop-filter: blur(7px);
+      }
+
+      .live-preview::before {
+        top: -18px;
+        background: linear-gradient(to bottom, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0));
+      }
+
+      .live-preview::after {
+        bottom: -18px;
+        background: linear-gradient(to top, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0));
+      }
+
+      .voice-shell.chat-open .live-preview {
+        opacity: 0;
+        transform: translateY(12px);
+      }
+
+      .live-card {
+        position: relative;
+        z-index: 2;
+        display: grid;
+        width: min(680px, 100%);
+        gap: 8px;
+        text-align: center;
+      }
+
+      .live-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: center;
+        gap: 8px;
+        min-width: 0;
+        padding: 0;
+      }
+
+      .live-row + .live-row {
+        border-top: 0;
+      }
+
+      .speaker {
+        color: var(--muted-foreground);
+        font-size: 11px;
+        font-weight: 750;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .live-text {
+        min-width: 0;
+        max-width: 620px;
+        overflow: hidden;
+        color: var(--foreground);
+        font-size: 14px;
+        line-height: 1.5;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .live-row:first-child .live-text {
+        color: var(--muted-foreground);
+        font-size: 13px;
+      }
+
+      .live-basis {
+        display: none;
+        justify-items: center;
+        gap: 7px;
+        padding-top: 2px;
+      }
+
+      .live-card.has-basis .live-basis {
+        display: grid;
+      }
+
+      .live-basis .basis-title {
+        gap: 10px;
+        color: var(--muted-foreground);
+        font-size: 11px;
+      }
+
+      .live-basis .source-list {
+        justify-content: center;
+        gap: 6px;
+      }
+
+      .live-basis .source {
+        border-color: rgba(0, 0, 0, 0.08);
+        background: rgba(255, 255, 255, 0.56);
+        padding: 4px 8px;
+        color: var(--muted-foreground);
+        font-size: 11px;
+        backdrop-filter: blur(12px);
+      }
+
+      .transcript {
+        position: absolute;
+        top: 196px;
+        right: 18px;
+        bottom: 142px;
+        left: 18px;
+        z-index: 10;
+        display: flex;
+        pointer-events: none;
+        opacity: 0;
+        transform: translateY(18px);
+        transition: opacity 260ms ease, transform 260ms ease;
+      }
+
+      .transcript::before,
+      .transcript::after {
+        display: none;
+      }
+
+      .transcript::before {
+        top: 0;
+        background: linear-gradient(to bottom, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0));
+      }
+
+      .transcript::after {
+        bottom: 0;
+        background: linear-gradient(to top, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0));
+      }
+
+      .voice-shell.chat-open .transcript {
+        pointer-events: auto;
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .transcript-inner {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        width: min(720px, 100%);
+        max-height: 100%;
+        margin: auto auto 0;
+        gap: 12px;
+        overflow: auto;
+        padding: 0 8px 8px;
+        mask-image: linear-gradient(
+          to bottom,
+          transparent 0,
+          #000 56px,
+          #000 calc(100% - 56px),
+          transparent 100%
+        );
+        -webkit-mask-image: linear-gradient(
+          to bottom,
+          transparent 0,
+          #000 56px,
+          #000 calc(100% - 56px),
+          transparent 100%
+        );
+        scrollbar-width: thin;
+      }
+
+      .transcript-placeholder {
+        align-self: end;
+        padding: 18px;
+        color: var(--muted-foreground);
+        text-align: center;
+        font-size: 13px;
+      }
+
+      .line {
+        display: grid;
+        gap: 6px;
+      }
+
+      .line.user {
+        justify-items: end;
+      }
+
+      .bubble {
+        max-width: min(620px, 88%);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: #fff;
+        padding: 12px 14px;
+        font-size: 14px;
+        line-height: 1.62;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04);
+      }
+
+      .user .bubble {
+        border-color: var(--foreground);
+        border-top-right-radius: 6px;
+        background: var(--foreground);
+        color: #fff;
+      }
+
+      .ai .bubble {
+        border-top-left-radius: 6px;
+      }
+
+      .meta {
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
+
+      .basis {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+        border-top: 1px solid var(--border);
+        padding-top: 10px;
+      }
+
+      .basis.pending {
+        color: var(--muted-foreground);
+      }
+
+      .typing {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .typing i {
+        width: 5px;
+        height: 5px;
+        border-radius: 999px;
+        background: currentColor;
+        animation: dot 1s ease-in-out infinite;
+      }
+
+      .typing i:nth-child(2) {
+        animation-delay: 0.16s;
+      }
+
+      .typing i:nth-child(3) {
+        animation-delay: 0.32s;
+      }
+
+      @keyframes dot {
+        0%,
+        100% {
+          opacity: 0.3;
+          transform: translateY(0);
+        }
+
+        50% {
+          opacity: 1;
+          transform: translateY(-3px);
+        }
+      }
+
+      .basis-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 12px;
+        font-weight: 750;
+      }
+
+      .source-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .source {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: #fafafa;
+        padding: 5px 9px;
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
+
+      .control-wrap {
+        position: absolute;
+        right: 12px;
+        bottom: 22px;
+        left: 12px;
+        z-index: 30;
+      }
+
+      .pre-message {
+        display: none;
+        width: min(720px, 100%);
+        margin: 0 auto;
+        padding-bottom: 10px;
+        color: var(--muted-foreground);
+        text-align: center;
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .voice-shell.chat-open .pre-message {
+        display: none;
+      }
+
+      .control-bar {
+        width: min(720px, 100%);
+        margin: 0 auto;
+        border: 1px solid var(--input);
+        border-radius: 31px;
+        background: rgba(255, 255, 255, 0.96);
+        padding: 10px;
+        box-shadow: 0 14px 48px rgba(0, 0, 0, 0.08);
+        backdrop-filter: blur(16px);
+      }
+
+      .input-row {
+        display: grid;
+        grid-template-rows: 0fr;
+        overflow: hidden;
+        border-bottom: 0 solid transparent;
+        transition: grid-template-rows 250ms ease, margin-bottom 250ms ease, border-color 250ms ease;
+      }
+
+      .voice-shell.chat-open .input-row {
+        grid-template-rows: 1fr;
+        margin-bottom: 8px;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+      }
+
+      .input-row > div {
+        display: flex;
+        min-height: 0;
+        align-items: end;
+        gap: 8px;
+        overflow: hidden;
+        padding: 0 0 8px 6px;
+      }
+
+      textarea {
+        min-height: 32px;
+        max-height: 58px;
+        flex: 1;
+        resize: none;
+        border: 0;
+        background: transparent;
+        outline: 0;
+        padding: 7px 0;
+        color: var(--foreground);
+        font-size: 14px;
+        line-height: 1.45;
+        scrollbar-width: thin;
+      }
+
+      textarea::placeholder {
+        color: var(--muted-foreground);
+      }
+
+      .controls {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .group {
+        display: flex;
+        gap: 6px;
+      }
+
+      .round {
+        display: inline-grid;
+        width: 42px;
+        height: 42px;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--muted);
+        color: var(--foreground);
+      }
+
+      .round.active {
+        border-color: rgba(0, 44, 242, 0.16);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .round svg,
+      .soft-button svg {
+        width: 18px;
+        height: 18px;
+      }
+
+      .end-call {
+        border: 0;
+        border-radius: 999px;
+        background: rgba(217, 45, 32, 0.1);
+        color: var(--danger);
+        padding: 0 18px;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+      }
+
+      .drawer {
+        position: fixed;
+        inset: auto 18px 18px auto;
+        z-index: 40;
+        display: none;
+        width: min(880px, calc(100vw - 36px));
+        max-height: min(720px, calc(100svh - 36px));
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 28px 90px rgba(0, 0, 0, 0.18);
+      }
+
+      .drawer.open {
+        display: block;
+      }
+
+      .drawer-head {
+        position: sticky;
+        top: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.95);
+        padding: 16px;
+        backdrop-filter: blur(12px);
+      }
+
+      .drawer h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .drawer p {
+        margin: 4px 0 0;
+        color: var(--muted-foreground);
+        font-size: 13px;
+      }
+
+      .drawer-body {
+        display: grid;
+        grid-template-columns: 320px minmax(0, 1fr);
+        gap: 14px;
+        padding: 16px;
+      }
+
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #fff;
+        padding: 14px;
+      }
+
+      .dropzone {
+        display: grid;
+        min-height: 184px;
+        place-items: center;
+        border: 1px dashed #cfcfcf;
+        border-radius: 8px;
+        background: #fafafa;
+        text-align: center;
+      }
+
+      .dropzone strong {
+        display: block;
+        margin-top: 8px;
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+        margin-top: 12px;
+      }
+
+      .field label {
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .field input,
+      .field select {
+        width: 100%;
+        border: 1px solid var(--input);
+        border-radius: 8px;
+        padding: 9px 10px;
+        outline: 0;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .stat {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+      }
+
+      .stat strong {
+        display: block;
+        font-size: 18px;
+      }
+
+      .stat span {
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--border);
+        padding: 12px 10px;
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+      }
+
+      th {
+        background: #fafafa;
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
+
+      .tag {
+        display: inline-flex;
+        border-radius: 999px;
+        background: rgba(22, 128, 60, 0.1);
+        color: var(--success);
+        padding: 4px 8px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      @media (max-width: 760px) {
+        .voice-shell {
+          min-height: 620px;
+        }
+
+        .top-strip {
+          top: 14px;
+          right: 14px;
+          left: 14px;
+        }
+
+        .pill {
+          display: none;
+        }
+
+        .brand span {
+          display: none;
+        }
+
+        .visualizer {
+          width: min(360px, 86vw);
+          height: min(360px, 86vw);
+        }
+
+        .voice-shell.chat-open .stage {
+          inset: 72px 0 auto;
+          height: 96px;
+        }
+
+        .transcript {
+          top: 178px;
+          bottom: 136px;
+        }
+
+        .transcript-inner {
+          padding-top: 0;
+        }
+
+        .bubble {
+          max-width: 94%;
+        }
+
+        .drawer {
+          inset: 10px;
+          width: auto;
+          max-height: none;
+        }
+
+        .drawer-body {
+          grid-template-columns: 1fr;
+        }
+
+        .stats {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        th:nth-child(3),
+        td:nth-child(3) {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="voice-shell" id="shell">
+      <header class="top-strip">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <div class="bars"><i></i><i></i><i></i><i></i></div>
+          </div>
+          <div>
+            <strong>LiveRAG</strong>
+            <span>Realtime Voice RAG</span>
+          </div>
+        </div>
+        <div class="top-actions">
+          <span class="pill"><span class="dot"></span> agent-prod 已连接</span>
+          <button class="soft-button" type="button" id="kbOpen">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M5 4h10l4 4v12H5V4Z" stroke="currentColor" stroke-width="2" />
+              <path d="M15 4v5h5M8 13h8M8 17h6" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+            知识库
+          </button>
+        </div>
+      </header>
+
+      <section class="stage" aria-label="纯语音对话">
+        <div class="visualizer-wrap">
+          <div class="visualizer">
+            <div class="core">
+              <div class="wave"><span></span><span></span><span></span><span></span><span></span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="live-preview" aria-label="全屏实时转录和引用预览">
+        <div class="live-card" id="liveCard">
+          <div class="live-row">
+            <div class="speaker">你</div>
+            <div class="live-text" id="liveUser">正在等待语音输入...</div>
+          </div>
+          <div class="live-row">
+            <div class="speaker">AI</div>
+            <div class="live-text" id="liveAi"><span class="typing"><i></i><i></i><i></i></span></div>
+          </div>
+          <div class="live-basis" id="liveBasis">
+            <div class="basis-title">
+              <span>本次回答依据</span>
+              <span class="meta" id="liveConfidence">检索中</span>
+            </div>
+            <div class="source-list" id="liveSources"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="transcript" aria-label="实时转录">
+        <div class="transcript-inner" id="transcript">
+          <div class="transcript-placeholder">打开转录后，实时语音内容会从这里逐句滚动出现。</div>
+        </div>
+      </section>
+
+      <div class="control-wrap">
+        <span class="pre-message">点击下方转录按钮查看实时文字和本次回答依据</span>
+        <div class="control-bar">
+          <div class="input-row">
+            <div>
+              <textarea aria-label="文字输入" placeholder="Type something..."></textarea>
+              <button class="round active" type="button" aria-label="发送">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="m4 12 16-8-5 16-3-7-8-1Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="controls">
+            <div class="group">
+              <button class="round active" type="button" aria-label="麦克风">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="2" />
+                  <path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                </svg>
+              </button>
+              <button class="round" type="button" aria-label="摄像头">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M4 7h11v10H4V7ZM15 11l5-3v8l-5-3" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <button class="round" type="button" aria-label="共享屏幕">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M4 5h16v11H4V5ZM9 20h6M12 16v4" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                </svg>
+              </button>
+              <button class="round" type="button" aria-label="打开转录和文字输入" id="chatToggle">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M5 5h14v10H8l-3 4V5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+            <button class="end-call" type="button">END CALL</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <aside class="drawer" id="drawer" aria-label="知识库管理">
+      <div class="drawer-head">
+        <div>
+          <h2>知识库管理</h2>
+          <p>用于上传、索引和管理实时语音 RAG 的检索内容。</p>
+        </div>
+        <button class="soft-button" type="button" id="kbClose">关闭</button>
+      </div>
+      <div class="drawer-body">
+        <div class="card">
+          <div class="dropzone">
+            <div>
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 16V4m0 0 4 4m-4-4-4 4M5 16v3h14v-3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <strong>拖拽文件到这里</strong>
+              <p>支持 PDF、Word、Markdown 和网页链接。</p>
+            </div>
+          </div>
+          <div class="field">
+            <label for="kbName">知识库名称</label>
+            <input id="kbName" value="产品与实施知识库" />
+          </div>
+          <div class="field">
+            <label for="chunk">分块策略</label>
+            <select id="chunk">
+              <option>自动：按标题与语义切分</option>
+              <option>固定长度：800 tokens</option>
+              <option>问答优化：保留上下文窗口</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <div class="stats">
+            <div class="stat"><strong>128</strong><span>文档总数</span></div>
+            <div class="stat"><strong>42k</strong><span>索引片段</span></div>
+            <div class="stat"><strong>5</strong><span>启用知识库</span></div>
+            <div class="stat"><strong>96%</strong><span>索引完成率</span></div>
+          </div>
+          <div class="card" style="padding: 0; overflow: hidden">
+            <table>
+              <thead>
+                <tr>
+                  <th>文档</th>
+                  <th>状态</th>
+                  <th>命中表现</th>
+                  <th>更新</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>产品说明书.pdf</strong><br /><span class="meta">48 页 · 326 个片段</span></td>
+                  <td><span class="tag">已索引</span></td>
+                  <td>今日引用 18 次</td>
+                  <td>05-18</td>
+                </tr>
+                <tr>
+                  <td><strong>RAG 架构方案.md</strong><br /><span class="meta">13 个标题 · 94 个片段</span></td>
+                  <td><span class="tag">已索引</span></td>
+                  <td>今日引用 11 次</td>
+                  <td>05-17</td>
+                </tr>
+                <tr>
+                  <td><strong>客户支持 FAQ.docx</strong><br /><span class="meta">72 个问答 · 156 个片段</span></td>
+                  <td><span class="tag" style="background: rgba(161, 92, 0, 0.1); color: #a15c00">索引中</span></td>
+                  <td>64%</td>
+                  <td>05-18</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <script>
+      const shell = document.querySelector("#shell");
+      const chatToggle = document.querySelector("#chatToggle");
+      const drawer = document.querySelector("#drawer");
+      const kbOpen = document.querySelector("#kbOpen");
+      const kbClose = document.querySelector("#kbClose");
+      const transcript = document.querySelector("#transcript");
+      const liveCard = document.querySelector("#liveCard");
+      const liveUser = document.querySelector("#liveUser");
+      const liveAi = document.querySelector("#liveAi");
+      const liveBasis = document.querySelector("#liveBasis");
+      const liveSources = document.querySelector("#liveSources");
+      const liveConfidence = document.querySelector("#liveConfidence");
+      let demoStarted = false;
+      let demoTimers = [];
+      let liveTimers = [];
+      let liveIndex = 0;
+
+      const demoTurns = [
+        {
+          from: "user",
+          text: "实时语音 RAG 项目里，回答时应该怎么展示引用依据？",
+          meta: "你 · 实时转录",
+        },
+        {
+          from: "ai",
+          text: "建议把引用依据放在每次 AI 回答下方，用“本次回答依据”作为固定标题。默认只显示 2 到 3 个来源芯片；需要追溯时再展开文档、段落、页码和相似度。",
+          meta: "LiveRAG Agent · 已引用知识库",
+          sources: ["产品说明书.pdf · p.12 · 0.92", "RAG 架构方案.md · §3.2 · 0.88", "会议纪要 05-12 · 2 条命中"],
+          confidence: "3 个来源 · 置信度 86%",
+        },
+        {
+          from: "user",
+          text: "那在纯语音状态下不要出现左右侧栏，只在我点文字按钮后展开。",
+          meta: "你 · 实时转录",
+        },
+        {
+          from: "ai",
+          text: "可以。默认保持全屏语音沉浸态，只保留中心可视化和底部悬浮控制条。点击底部文字/转录按钮后，转录流从下方展开，并持续滚动显示“一句用户、一句 AI”的对话。",
+          meta: "LiveRAG Agent · 正在听取下一句",
+          sources: ["LiveKit 当前界面结构 · control bar", "RAG 交互方案.md · 引用展示"],
+          confidence: "2 个来源",
+        },
+        {
+          from: "user",
+          text: "我想看到它真正运行时，回答依据是怎么动态出现的。",
+          meta: "你 · 实时转录",
+        },
+        {
+          from: "ai",
+          text: "运行时可以先显示 AI 的增量回答，回答稳定后再把命中的依据片段插入到同一个气泡底部。这样语音反馈不中断，同时用户能在需要时追溯当前回答用了哪些知识。",
+          meta: "LiveRAG Agent · 回答完成",
+          sources: ["交互流程草案.md · 动态引用", "知识库检索日志 · top-k=3", "产品说明书.pdf · p.18"],
+          confidence: "3 个来源 · 置信度 91%",
+        },
+      ];
+
+      const liveScenes = [
+        {
+          user: "帮我确认实时语音 RAG 回答时，引用依据应该怎么展示？",
+          ai: "建议默认展示当前回答最关键的 2 到 3 个来源，保留文档名、页码或章节、相似度，让用户在全屏语音态也能快速判断可信度。",
+          confidence: "3 个来源 · 置信度 86%",
+          sources: ["产品说明书.pdf · p.12 · 0.92", "RAG 架构方案.md · §3.2 · 0.88", "会议纪要 05-12 · 2 条"],
+        },
+        {
+          user: "如果我不展开文字输入，也要能看到实时转录和引用。",
+          ai: "可以把它做成底部悬浮的实时语音流。用户句子先出现，AI 回答生成中显示状态，回答稳定后在同一区域补上“本次回答依据”。",
+          confidence: "2 个来源 · 置信度 89%",
+          sources: ["交互流程草案.md · 全屏态", "LiveKit 当前界面 · control bar"],
+        },
+        {
+          user: "知识库命中多个片段时，页面要怎么避免太重？",
+          ai: "全屏态只展示引用摘要，完整证据链放到展开后的转录面板或知识库详情里。这样不会破坏语音对话的沉浸感。",
+          confidence: "3 个来源 · 置信度 91%",
+          sources: ["知识库检索日志 · top-k=3", "RAG UI 规范.md · 引用摘要", "产品说明书.pdf · p.18"],
+        },
+      ];
+
+      function scrollTranscript() {
+        transcript.scrollTop = transcript.scrollHeight;
+      }
+
+      function clearDemo() {
+        demoTimers.forEach((timer) => window.clearTimeout(timer));
+        demoTimers = [];
+        demoStarted = false;
+        transcript.innerHTML = '<div class="transcript-placeholder">打开转录后，实时语音内容会从这里逐句滚动出现。</div>';
+      }
+
+      function addTurn(turn) {
+        const placeholder = transcript.querySelector(".transcript-placeholder");
+        if (placeholder) placeholder.remove();
+
+        const line = document.createElement("div");
+        line.className = `line ${turn.from === "user" ? "user" : "ai"}`;
+
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+
+        if (turn.from === "ai") {
+          bubble.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
+          line.appendChild(bubble);
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          meta.textContent = "LiveRAG Agent · 正在生成";
+          line.appendChild(meta);
+          transcript.appendChild(line);
+          scrollTranscript();
+
+          demoTimers.push(window.setTimeout(() => {
+            bubble.textContent = turn.text;
+            const pending = document.createElement("div");
+            pending.className = "basis pending";
+            pending.innerHTML = '<div class="basis-title"><span>本次回答依据</span><span class="typing"><i></i><i></i><i></i></span></div>';
+            bubble.appendChild(pending);
+            scrollTranscript();
+          }, 700));
+
+          demoTimers.push(window.setTimeout(() => {
+            const basis = bubble.querySelector(".basis");
+            basis.className = "basis";
+            basis.innerHTML = `
+              <div class="basis-title">
+                <span>本次回答依据</span>
+                <span class="meta">${turn.confidence}</span>
+              </div>
+              <div class="source-list">
+                ${turn.sources.map((source) => `<span class="source">${source}</span>`).join("")}
+              </div>
+            `;
+            meta.textContent = turn.meta;
+            scrollTranscript();
+          }, 1500));
+        } else {
+          bubble.textContent = turn.text;
+          line.appendChild(bubble);
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          meta.textContent = turn.meta;
+          line.appendChild(meta);
+          transcript.appendChild(line);
+          scrollTranscript();
+        }
+      }
+
+      function runDemo() {
+        if (demoStarted) return;
+        clearDemo();
+        demoStarted = true;
+        demoTurns.forEach((turn, index) => {
+          demoTimers.push(window.setTimeout(() => addTurn(turn), index * 2300));
+        });
+      }
+
+      function clearLiveTimers() {
+        liveTimers.forEach((timer) => window.clearTimeout(timer));
+        liveTimers = [];
+      }
+
+      function renderLiveScene() {
+        clearLiveTimers();
+        const scene = liveScenes[liveIndex % liveScenes.length];
+        liveIndex += 1;
+
+        liveCard.classList.remove("has-basis");
+        liveUser.textContent = "正在听取语音...";
+        liveAi.innerHTML = '<span class="meta">等待用户说完</span>';
+        liveSources.innerHTML = "";
+        liveConfidence.textContent = "检索中";
+
+        liveTimers.push(window.setTimeout(() => {
+          liveUser.textContent = scene.user;
+          liveAi.innerHTML = '<span class="typing"><i></i><i></i><i></i></span> <span class="meta">正在检索知识库</span>';
+        }, 700));
+
+        liveTimers.push(window.setTimeout(() => {
+          liveAi.textContent = scene.ai;
+          liveCard.classList.add("has-basis");
+          liveConfidence.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
+        }, 2100));
+
+        liveTimers.push(window.setTimeout(() => {
+          liveConfidence.textContent = scene.confidence;
+          liveSources.innerHTML = scene.sources.map((source) => `<span class="source">${source}</span>`).join("");
+        }, 3200));
+
+        liveTimers.push(window.setTimeout(renderLiveScene, 7600));
+      }
+
+      chatToggle.addEventListener("click", () => {
+        shell.classList.toggle("chat-open");
+        chatToggle.classList.toggle("active", shell.classList.contains("chat-open"));
+        if (shell.classList.contains("chat-open")) {
+          runDemo();
+        } else {
+          clearDemo();
+        }
+      });
+
+      kbOpen.addEventListener("click", () => drawer.classList.add("open"));
+      kbClose.addEventListener("click", () => drawer.classList.remove("open"));
+      renderLiveScene();
+    </script>
+  </body>
+</html>

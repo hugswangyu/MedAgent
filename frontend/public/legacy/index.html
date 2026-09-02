@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>医疗智能助手 — MedAgent</title>
+    <meta name="description" content="MedAgent 医疗智能助手，支持医学知识库问答、病历检索和诊疗资料管理。">
+    <link rel="stylesheet" href="style.css">
+    <!-- Markdown Parser -->
+    <script src="vendor/marked.min.js"></script>
+    <!-- Syntax Highlighting -->
+    <link rel="stylesheet" href="vendor/atom-one-light.min.css">
+    <script src="vendor/highlight.min.js"></script>
+    <!-- Vue 3 -->
+    <script src="vendor/vue.global.js"></script>
+</head>
+<body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <div class="bg-atmosphere" aria-hidden="true">
+        <div class="bg-grid"></div>
+    </div>
+
+    <div id="app" class="app-wrapper">
+
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <!-- Decorative medical cross pattern behind sidebar -->
+            <div class="sidebar-pattern" aria-hidden="true">
+                <svg width="200" height="200" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M100 20v160M20 100h160" stroke="rgba(255,255,255,0.03)" stroke-width="1.5" stroke-linecap="round"/>
+                    <circle cx="100" cy="100" r="60" stroke="rgba(255,255,255,0.02)" stroke-width="1" fill="none"/>
+                    <circle cx="100" cy="100" r="35" stroke="rgba(255,255,255,0.03)" stroke-width="0.75" fill="none"/>
+                </svg>
+            </div>
+
+            <div class="sidebar-header">
+                <div class="logo-icon" aria-hidden="true">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="2" y="2" width="20" height="20" rx="4" fill="white" opacity="0.15"/>
+                        <rect x="8" y="3" width="8" height="18" rx="2" fill="white" opacity="0.92"/>
+                        <rect x="3" y="8" width="18" height="8" rx="2" fill="white" opacity="0.92"/>
+                    </svg>
+                </div>
+                <div class="logo-text">
+                    <h2>MedAgent</h2>
+                    <span class="logo-subtitle">医疗智能助手</span>
+                </div>
+            </div>
+
+            <div class="sidebar-metrics" aria-label="系统概览">
+                <div>
+                    <strong>{{ documents.length }}</strong>
+                    <span>病历</span>
+                </div>
+                <div>
+                    <strong>{{ messages.length }}</strong>
+                    <span>消息</span>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <button @click="handleNewChat" :class="['nav-btn', {active: activeNav === 'newChat'}]" type="button">
+                    <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                    <span>新建会话</span>
+                </button>
+                <button @click="handleHistory" :class="['nav-btn', {active: activeNav === 'history'}]" type="button">
+                    <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                    </svg>
+                    <span>历史记录</span>
+                </button>
+                <button v-if="isAuthenticated" @click="handleSettings" :class="['nav-btn', {active: activeNav === 'settings'}]" type="button">
+                    <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                    <span>病历管理</span>
+                </button>
+            </nav>
+
+            <!-- Sidebar decorative divider -->
+            <div class="sidebar-divider" aria-hidden="true">
+                <svg width="100%" height="12" viewBox="0 0 200 12" preserveAspectRatio="none" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <line x1="20" y1="6" x2="180" y2="6" stroke="rgba(255,255,255,0.06)" stroke-width="1" stroke-dasharray="4 4"/>
+                </svg>
+            </div>
+
+            <div class="sidebar-footer">
+                <button @click="handleClearChat" class="danger-btn" type="button">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+                    </svg>
+                    清空对话
+                </button>
+                <div v-if="isAuthenticated" class="user-badge">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                    </svg>
+                    <span>{{ currentUser.username }}</span>
+                </div>
+                <button v-if="isAuthenticated" @click="handleLogout" class="danger-btn logout-btn" type="button">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+                    </svg>
+                    退出登录
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content" id="main-content">
+            <div v-if="uiMessage.text" :class="['app-toast', `app-toast--${uiMessage.type}`]" role="status" aria-live="polite">
+                {{ uiMessage.text }}
+            </div>
+
+            <dialog ref="confirmDialog" class="confirm-dialog" @close="handleDialogClose">
+                <form method="dialog" class="confirm-card">
+                    <div class="confirm-kicker">{{ confirmDialog.tone === 'danger' ? '需要确认' : '请确认' }}</div>
+                    <h2>{{ confirmDialog.title }}</h2>
+                    <p>{{ confirmDialog.message }}</p>
+                    <div class="confirm-actions">
+                        <button type="button" class="btn-secondary" @click="cancelConfirm">取消</button>
+                        <button type="button" :class="['btn-primary', {'btn-primary-danger': confirmDialog.tone === 'danger'}]" @click="acceptConfirm">
+                            {{ confirmDialog.confirmText }}
+                        </button>
+                    </div>
+                </form>
+            </dialog>
+
+            <!-- Auth Panel -->
+            <div v-if="!isAuthenticated" class="auth-panel">
+                <div class="auth-brand">
+                    <div class="auth-brand-icon">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="8" y="3" width="8" height="18" rx="2.5" fill="currentColor"/>
+                            <rect x="3" y="8" width="18" height="8" rx="2.5" fill="currentColor"/>
+                        </svg>
+                    </div>
+                    <span class="auth-kicker">Medical Knowledge Graph + RAG</span>
+                    <h2 v-if="authMode === 'login'">欢迎使用<br>医疗智能助手</h2>
+                    <h2 v-else>注册新账号</h2>
+                    <p>基于医学知识库的智能问答系统，支持病历检索与循证决策。</p>
+                </div>
+                <div class="auth-form">
+                    <div class="auth-form-heading">
+                        <span>{{ authMode === 'login' ? '登录' : '注册' }}</span>
+                        <strong>{{ authMode === 'login' ? '开始你的问答对话' : '创建账号，开启医学问答' }}</strong>
+                    </div>
+                    <div class="input-group">
+                        <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                        </svg>
+                        <input v-model="authForm.username" type="text" placeholder="用户名" autocomplete="username" />
+                    </div>
+                    <div class="input-group">
+                        <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                        </svg>
+                        <input v-model="authForm.password" type="password" placeholder="密码" autocomplete="current-password" />
+                    </div>
+                    <p v-if="authError" class="inline-error" role="alert">{{ authError }}</p>
+                    <button class="send-btn auth-submit" :disabled="authLoading" @click="handleAuthSubmit" type="button">
+                        <span v-if="!authLoading">{{ authMode === 'login' ? '登 录' : '注 册' }}</span>
+                        <span v-else class="btn-loading">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="spin-icon">
+                                <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                            </svg>
+                            提交中...
+                        </span>
+                    </button>
+                    <button class="auth-switch" @click="switchAuthMode" type="button">
+                        {{ authMode === 'login' ? '没有账号？去注册' : '已有账号？去登录' }}
+                    </button>
+                </div>
+            </div>
+
+            <!-- Medical Records Management Panel -->
+            <div v-if="isAuthenticated && activeNav === 'settings'" class="settings-panel">
+                <div class="settings-header">
+                    <div class="settings-title-row">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="settings-title-icon">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                        </svg>
+                        <h2>病历管理</h2>
+                    </div>
+                    <p>上传病历文档进行向量化处理，支持 PDF、Word 和纯文本格式，上传后可基于病历内容进行智能检索</p>
+                    <div class="settings-stats">
+                        <span><strong>{{ documents.length }}</strong> 已上传</span>
+                        <span><strong>{{ documents.reduce((sum, doc) => sum + (doc.chunk_count || 0), 0) }}</strong> 文本片段</span>
+                        <span><strong>{{ isUploading ? '运行中' : '空闲' }}</strong> 索引状态</span>
+                    </div>
+                </div>
+
+                <div class="upload-section">
+                    <h3>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        上传病历
+                    </h3>
+                    <div class="upload-area">
+                        <input
+                            type="file"
+                            ref="fileInput"
+                            @change="handleFileSelect"
+                            accept=".pdf,.docx,.txt"
+                            class="visually-hidden-file"
+                        />
+                        <button @click="$refs.fileInput.click()" class="upload-btn" type="button">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                <polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+                            </svg>
+                            选择文件
+                        </button>
+                        <div v-if="selectedFile" class="selected-file">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>
+                            </svg>
+                            <span>{{ selectedFile.name }}</span>
+                            <button @click="uploadDocument" class="btn-primary" :disabled="isUploading" type="button">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>
+                                </svg>
+                                {{ isUploading ? '上传中...' : '开始上传' }}
+                            </button>
+                        </div>
+                        <div v-if="uploadSteps.length" class="upload-progress" :class="{ collapsed: uploadProgressCollapsed }">
+                            <button type="button" class="upload-progress-header" @click="toggleUploadProgressCollapsed" aria-label="切换上传进度详情">
+                                <span v-if="uploadProgress" class="upload-message">{{ uploadProgress }}</span>
+                                <span v-else class="upload-message">上传进度</span>
+                                <span class="upload-toggle">{{ uploadProgressCollapsed ? '展开' : '收起' }}</span>
+                            </button>
+                            <div v-show="!uploadProgressCollapsed" class="upload-step-list">
+                                <div
+                                    v-for="step in uploadSteps"
+                                    :key="step.key"
+                                    class="upload-step"
+                                    :class="`upload-step-${step.status}`"
+                                >
+                                    <div class="upload-step-header">
+                                        <span class="upload-step-label">{{ step.label }}</span>
+                                        <span class="upload-step-percent">{{ step.percent }}%</span>
+                                    </div>
+                                    <div class="upload-step-bar">
+                                        <div class="upload-step-fill" :style="{ width: step.percent + '%' }"></div>
+                                    </div>
+                                    <div v-if="step.message" class="upload-step-message">{{ step.message }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="documents-section">
+                    <div class="documents-section-header">
+                        <h3>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                            </svg>
+                            已上传病历
+                        </h3>
+                        <button @click="loadDocuments" class="btn-secondary" type="button">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                            </svg>
+                            刷新列表
+                        </button>
+                    </div>
+
+                    <p v-if="documentError" class="inline-error" role="alert">{{ documentError }}</p>
+
+                    <div v-if="documentsLoading" class="documents-skeleton" aria-label="病历列表加载中">
+                        <div class="skeleton-row"></div>
+                        <div class="skeleton-row"></div>
+                        <div class="skeleton-row short"></div>
+                    </div>
+
+                    <div v-else-if="documents.length === 0" class="empty-documents">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="empty-icon">
+                            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>
+                        </svg>
+                        <p>暂无病历</p>
+                        <span class="empty-hint">上传 PDF、Word 或纯文本文档开始使用</span>
+                        <button @click="$refs.fileInput.click()" class="empty-action" type="button">选择病历文件</button>
+                    </div>
+
+                    <div v-else class="documents-list">
+                        <div
+                            v-for="doc in documents"
+                            :key="doc.filename"
+                            class="document-item"
+                            :class="{ deleting: deleteJobs[doc.filename]?.status === 'running' }"
+                        >
+                            <div class="document-main">
+                                <div class="document-row">
+                                    <div class="document-info">
+                                        <div class="document-icon">
+                                            <svg v-if="doc.file_type === 'PDF'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#DC2626" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                                            </svg>
+                                            <svg v-else-if="doc.file_type === 'Word' || doc.file_type === 'DOCX'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                                            </svg>
+                                            <svg v-else width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                                            </svg>
+                                        </div>
+                                        <div class="document-details">
+                                            <div class="document-name">{{ doc.filename }}</div>
+                                            <div class="document-meta">
+                                                <span>{{ doc.file_type }}</span>
+                                                <span class="doc-meta-sep">·</span>
+                                                <span>{{ doc.chunk_count }} 个文本片段</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button
+                                        @click="deleteDocument(doc.filename)"
+                                        class="btn-danger"
+                                        title="删除病历"
+                                        aria-label="删除病历"
+                                        :disabled="isDeleteActionLocked(doc.filename)"
+                                        type="button"
+                                    >
+                                        <svg v-if="deleteJobs[doc.filename]?.status === 'running'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin-icon">
+                                            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                                        </svg>
+                                        <svg v-else-if="deleteJobs[doc.filename]?.status === 'completed'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <polyline points="20 6 9 17 4 12"/>
+                                        </svg>
+                                        <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                        </svg>
+                                    </button>
+                                </div>
+
+                                <div
+                                    v-if="deleteJobs[doc.filename]"
+                                    class="upload-progress delete-progress"
+                                    :class="{ collapsed: deleteJobs[doc.filename].collapsed }"
+                                >
+                                    <button type="button" class="upload-progress-header" @click="toggleDeleteJobCollapsed(doc.filename)" aria-label="切换删除进度详情">
+                                        <span class="upload-message">{{ deleteJobs[doc.filename].message || '删除进度' }}</span>
+                                        <span class="upload-toggle">{{ deleteJobs[doc.filename].collapsed ? '展开' : '收起' }}</span>
+                                    </button>
+                                    <div v-show="!deleteJobs[doc.filename].collapsed" class="upload-step-list">
+                                        <div
+                                            v-for="step in deleteJobs[doc.filename].steps"
+                                            :key="step.key"
+                                            class="upload-step"
+                                            :class="`upload-step-${step.status}`"
+                                        >
+                                            <div class="upload-step-header">
+                                                <span class="upload-step-label">{{ step.label }}</span>
+                                                <span class="upload-step-percent">{{ step.percent }}%</span>
+                                            </div>
+                                            <div class="upload-step-bar">
+                                                <div class="upload-step-fill" :style="{ width: step.percent + '%' }"></div>
+                                            </div>
+                                            <div v-if="step.message" class="upload-step-message">{{ step.message }}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- History Sidebar -->
+            <div v-if="isAuthenticated && showHistorySidebar" class="history-sidebar">
+                <div class="history-header">
+                    <h3>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                        历史会话
+                    </h3>
+                    <button @click="showHistorySidebar = false" class="close-btn" aria-label="关闭历史记录">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="history-list">
+                    <div v-if="sessions.length === 0" class="empty-history">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="empty-icon">
+                            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                        <p>暂无历史记录</p>
+                    </div>
+                    <div
+                        v-for="session in sessions"
+                        :key="session.session_id"
+                        class="history-item"
+                        :class="{active: session.session_id === sessionId}"
+                    >
+                        <div class="session-body" @click="loadSession(session.session_id)">
+                            <div class="session-info">
+                                <div class="session-title">{{ session.session_id }}</div>
+                                <div class="session-meta">
+                                    <span>{{ session.message_count }} 条消息</span>
+                                    <span>{{ new Date(session.updated_at).toLocaleString() }}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <button
+                            class="history-delete-btn"
+                            title="删除会话"
+                            @click.stop="deleteSession(session.session_id)"
+                            aria-label="删除会话"
+                            type="button"
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat Area -->
+            <div v-show="isAuthenticated && activeNav !== 'settings'" class="chat-area">
+                <header class="chat-header">
+                    <div class="header-info">
+                        <div class="status-dot" title="在线"></div>
+                        <svg class="header-avatar" width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="8" y="3" width="8" height="18" rx="2" fill="currentColor" opacity="0.92"/>
+                            <rect x="3" y="8" width="18" height="8" rx="2" fill="currentColor" opacity="0.92"/>
+                        </svg>
+                        <span>医疗助手</span>
+                        <span class="header-badge">{{ knowledgeBase }}</span>
+                        <span class="header-badge header-badge-muted">{{ messages.length }} 条消息</span>
+                    </div>
+                    <div class="header-actions">
+                        <button class="icon-btn" title="新建会话" aria-label="新建会话" type="button" @click="handleNewChat">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 5v14M5 12h14"/>
+                            </svg>
+                        </button>
+                    </div>
+                </header>
+
+                <div class="chat-container" ref="chatContainer">
+                <div v-if="messages.length === 0" class="welcome-screen">
+                    <div class="welcome-illustration" aria-hidden="true">
+                        <svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="48" cy="48" r="44" stroke="currentColor" stroke-width="1" opacity="0.15"/>
+                            <path d="M18 58h14l7-22 9 36 8-24h22" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M28 30h40M28 44h40M28 66h20" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".28"/>
+                            <circle cx="48" cy="48" r="7" fill="currentColor" opacity=".18"/>
+                        </svg>
+                    </div>
+                    <span class="welcome-kicker">Evidence-based Medical Q&A</span>
+                    <h3>您好！我是医疗智能助手</h3>
+                    <p>请先选择相关科室并输入您的问题，系统将基于医学知识逐步进行分析，为您提供参考建议，并展示相关依据和参考来源。</p>
+                    <div class="welcome-hints">
+                        <span class="hint-chip">查询疾病诊疗指南</span>
+                        <span class="hint-chip">解读检查检验报告</span>
+                        <span class="hint-chip">了解疾病治疗方案</span>
+                    </div>
+                </div>
+
+                <!-- Messages -->
+                <div v-for="(msg, index) in messages" :key="index" :class="['message', msg.isUser ? 'user-message' : 'bot-message']">
+                    <!-- Bot avatar -->
+                    <div v-if="!msg.isUser" class="message-avatar" aria-hidden="true">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="9" y="2" width="6" height="20" rx="2"/>
+                            <rect x="2" y="9" width="20" height="6" rx="2"/>
+                        </svg>
+                    </div>
+                    <div class="message-body">
+                        <!-- Thinking animation -->
+                        <div v-if="!msg.isUser && msg.isThinking && !msg.text" class="message-content thinking-content">
+                            <div class="thinking-header">
+                                <div class="thinking-dots">
+                                    <span class="tdot"></span>
+                                    <span class="tdot"></span>
+                                    <span class="tdot"></span>
+                                </div>
+                                <span v-if="!msg.ragSteps || !msg.ragSteps.length" class="thinking-text">正在检索分析中...</span>
+                                <span v-else class="thinking-text">{{ msg.ragSteps[msg.ragSteps.length - 1].label }}</span>
+                            </div>
+                            <div v-if="msg.ragSteps && msg.ragSteps.length" class="thinking-trace-lines">
+                                <div v-for="(step, sIdx) in msg.ragSteps" :key="sIdx" class="thinking-trace-line">
+                                    <span class="thinking-trace-icon">{{ step.icon || '▶' }}</span>
+                                    <span class="thinking-trace-label">{{ step.label }}</span>
+                                    <span v-if="step.detail" class="thinking-trace-detail">{{ step.detail }}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Normal reply content -->
+                        <div v-else class="message-content" v-html="msg.isUser ? escapeHtml(msg.text) : parseMarkdown(msg.text)"></div>
+                        <!-- RAG trace -->
+                        <div v-if="!msg.isUser && msg.ragTrace" class="message-meta">
+                            <details class="reasoning-details">
+                                <summary>检索过程</summary>
+                                <div class="reasoning-content">
+                                    <div class="trace-line">
+                                        工具：{{ msg.ragTrace.tool_used ? msg.ragTrace.tool_name : '未使用' }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.retrieval_stage" class="trace-line">
+                                        检索阶段：{{ msg.ragTrace.retrieval_stage }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.grade_score" class="trace-line">
+                                        相关性评分：{{ msg.ragTrace.grade_score }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.grade_route" class="trace-line">
+                                        评分决策：{{ msg.ragTrace.grade_route }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.rewrite_needed !== null && msg.ragTrace.rewrite_needed !== undefined" class="trace-line">
+                                        是否需要重写：{{ msg.ragTrace.rewrite_needed ? '是' : '否' }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.rewrite_strategy" class="trace-line">
+                                        重写策略：{{ msg.ragTrace.rewrite_strategy }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.rewrite_query" class="trace-line">
+                                        重写查询：{{ msg.ragTrace.rewrite_query }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.retrieval_mode" class="trace-line">
+                                        检索模式：{{ msg.ragTrace.retrieval_mode }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.candidate_k" class="trace-line">
+                                        候选召回数：{{ msg.ragTrace.candidate_k }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.leaf_retrieve_level" class="trace-line">
+                                        叶子召回层级：L{{ msg.ragTrace.leaf_retrieve_level }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.auto_merge_enabled !== null && msg.ragTrace.auto_merge_enabled !== undefined" class="trace-line">
+                                        Auto-merging启用：{{ msg.ragTrace.auto_merge_enabled ? '是' : '否' }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.auto_merge_applied !== null && msg.ragTrace.auto_merge_applied !== undefined" class="trace-line">
+                                        Auto-merging应用：{{ msg.ragTrace.auto_merge_applied ? '是' : '否' }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.auto_merge_threshold" class="trace-line">
+                                        合并阈值：{{ msg.ragTrace.auto_merge_threshold }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.auto_merge_replaced_chunks" class="trace-line">
+                                        合并替换片段：{{ msg.ragTrace.auto_merge_replaced_chunks }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.auto_merge_steps" class="trace-line">
+                                        合并轮次：{{ msg.ragTrace.auto_merge_steps }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.rerank_enabled !== null && msg.ragTrace.rerank_enabled !== undefined" class="trace-line">
+                                        Rerank已配置：{{ msg.ragTrace.rerank_enabled ? '是' : '否' }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.rerank_applied !== null && msg.ragTrace.rerank_applied !== undefined" class="trace-line">
+                                        Rerank已执行：{{ msg.ragTrace.rerank_applied ? '是' : '否' }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.rerank_model" class="trace-line">
+                                        Rerank模型：{{ msg.ragTrace.rerank_model }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.rerank_error" class="trace-line">
+                                        Rerank状态：{{ msg.ragTrace.rerank_error }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.expansion_type" class="trace-line">
+                                        扩展策略：{{ msg.ragTrace.expansion_type }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.step_back_question" class="trace-line">
+                                        退步问题：{{ msg.ragTrace.step_back_question }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.expanded_query" class="trace-line">
+                                        扩展查询：{{ msg.ragTrace.expanded_query }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.hypothetical_doc" class="trace-line">
+                                        HyDE 文档：{{ msg.ragTrace.hypothetical_doc }}
+                                    </div>
+                                    <div v-if="msg.ragTrace.initial_retrieved_chunks && msg.ragTrace.initial_retrieved_chunks.length" class="sources">
+                                        <div class="sources-title">初次检索结果</div>
+                                        <ul class="sources-list">
+                                            <li v-for="(chunk, sIndex) in msg.ragTrace.initial_retrieved_chunks" :key="sIndex" class="source-item">
+                                                <div class="source-title-line">
+                                                    <span class="source-file">{{ chunk.filename }}</span>
+                                                    <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
+                                                </div>
+                                                <div class="source-meta-line">
+                                                    <span class="source-page">排名：#{{ chunk.rrf_rank || (sIndex + 1) }}</span>
+                                                    <span v-if="chunk.rerank_score !== null && chunk.rerank_score !== undefined" class="source-page">相关度：{{ Number(chunk.rerank_score).toFixed(4) }}</span>
+                                                </div>
+                                                <div v-if="chunk.text" class="source-excerpt">{{ chunk.text }}</div>
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <div v-if="msg.ragTrace.expanded_retrieved_chunks && msg.ragTrace.expanded_retrieved_chunks.length" class="sources">
+                                        <div class="sources-title">重写后检索结果</div>
+                                        <ul class="sources-list">
+                                            <li v-for="(chunk, sIndex) in msg.ragTrace.expanded_retrieved_chunks" :key="sIndex" class="source-item">
+                                                <div class="source-title-line">
+                                                    <span class="source-file">{{ chunk.filename }}</span>
+                                                    <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
+                                                </div>
+                                                <div class="source-meta-line">
+                                                    <span class="source-page">排名：#{{ chunk.rrf_rank || (sIndex + 1) }}</span>
+                                                    <span v-if="chunk.rerank_score !== null && chunk.rerank_score !== undefined" class="source-page">相关度：{{ Number(chunk.rerank_score).toFixed(4) }}</span>
+                                                </div>
+                                                <div v-if="chunk.text" class="source-excerpt">{{ chunk.text }}</div>
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <div v-if="msg.ragTrace.retrieved_chunks && msg.ragTrace.retrieved_chunks.length && !(msg.ragTrace.initial_retrieved_chunks && msg.ragTrace.initial_retrieved_chunks.length) && !(msg.ragTrace.expanded_retrieved_chunks && msg.ragTrace.expanded_retrieved_chunks.length)" class="sources">
+                                        <div class="sources-title">向量检索结果</div>
+                                        <ul class="sources-list">
+                                            <li v-for="(chunk, sIndex) in msg.ragTrace.retrieved_chunks" :key="sIndex" class="source-item">
+                                                <div class="source-title-line">
+                                                    <span class="source-file">{{ chunk.filename }}</span>
+                                                    <span v-if="chunk.page_number" class="source-page">（第 {{ chunk.page_number }} 页）</span>
+                                                </div>
+                                                <div class="source-meta-line">
+                                                    <span class="source-page">排名：#{{ chunk.rrf_rank || (sIndex + 1) }}</span>
+                                                    <span v-if="chunk.rerank_score !== null && chunk.rerank_score !== undefined" class="source-page">相关度：{{ Number(chunk.rerank_score).toFixed(4) }}</span>
+                                                </div>
+                                                <div v-if="chunk.text" class="source-excerpt">{{ chunk.text }}</div>
+                                            </li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <div class="input-area-wrapper">
+                <div class="kb-selector">
+                    <label>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                        </svg>
+                        选择科室/知识库：
+                    </label>
+                    <select v-model="knowledgeBase" aria-label="选择科室或知识库">
+                        <option v-for="kb in knowledgeBases" :key="kb" :value="kb">{{ kb }}</option>
+                    </select>
+                </div>
+                <div class="model-selector">
+                    <label>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>
+                        </svg>
+                        模型：
+                    </label>
+                    <select v-model="selectedProvider" @change="onProviderChange" aria-label="选择LLM提供商">
+                        <option value="">默认</option>
+                        <option v-for="p in availableProviders" :key="p.provider" :value="p.provider">
+                            {{ providerLabel(p.provider) }}
+                        </option>
+                    </select>
+                    <select v-model="selectedModel" aria-label="选择模型" :disabled="currentProviderModels.length === 0">
+                        <option value="">默认</option>
+                        <option v-for="m in currentProviderModels" :key="m" :value="m">{{ m }}</option>
+                    </select>
+                </div>
+                <div class="input-area">
+                    <button class="attach-btn" aria-label="附件" type="button">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                        </svg>
+                    </button>
+                    <textarea
+                        v-model="userInput"
+                        @keydown="handleKeyDown"
+                        @compositionstart="handleCompositionStart"
+                        @compositionend="handleCompositionEnd"
+                        @input="autoResize"
+                        placeholder="请输入您的医学问题... (Shift+Enter 换行)"
+                        rows="1"
+                        ref="textarea"
+                    ></textarea>
+                    <button v-if="isLoading" @click="handleStop" class="send-btn stop-btn" title="终止回答" aria-label="终止回答" type="button">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="6" y="6" width="12" height="12" rx="1"/>
+                        </svg>
+                    </button>
+                    <button v-else @click="handleSend" class="send-btn" title="发送" aria-label="发送消息" type="button">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="footer-text">AI 生成的内容仅供参考，不构成医疗建议，请仔细甄别。</div>
+            </div>
+            </div>
+            <!-- End of Chat Area -->
+        </main>
+    </div>
+
+    <!-- Grain texture overlay -->
+    <div class="noise-overlay" aria-hidden="true"></div>
+
+    <script src="script.js"></script>
+</body>
+</html>

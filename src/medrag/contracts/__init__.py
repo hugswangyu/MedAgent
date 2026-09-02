@@ -1,3 +1,3 @@
-"""MedAgent 对外服务契约。"""
+"""Backward-compatible imports for contracts now owned by medcontracts."""
 
-from .phase0 import *  # noqa: F401,F403
+from medcontracts.phase0 import *  # noqa: F401,F403

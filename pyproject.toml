@@ -33,7 +33,22 @@ dependencies = [
     "langchain-huggingface>=1.2.2",
 ]
 
+[project.scripts]
+medlive-agent = "medlive.main:main"
+medlive-api = "medlive.api.main:main"
+medlive-rag-service = "medlive.rag.cli:main"
+
 [project.optional-dependencies]
+live = [
+    "lightrag-hku[api]>=1.4.16",
+    "livekit-agents[minimax,turn-detector]~=1.4",
+    "livekit-plugins-openai~=1.4",
+    "livekit-plugins-silero>=1.4.5",
+    "livekit-plugins-volcengine>=1.2.8",
+    "openpyxl>=3.1.0",
+    "python-pptx>=1.0.0",
+    "websockets>=15.0.0",
+]
 eval = [
     "ragas>=0.4,<0.5",
     "datasets>=2.18",
