@@ -316,6 +316,19 @@ def create_voice_session_binding(
                 ),
             )
             row = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO conversation_sessions(
+                    session_type, session_id, user_id
+                ) VALUES ('voice', %s, %s)
+                ON CONFLICT (session_type, session_id) DO UPDATE SET
+                    user_id = conversation_sessions.user_id
+                WHERE conversation_sessions.user_id = EXCLUDED.user_id
+                """,
+                (session_id, user_id),
+            )
+            if cur.rowcount != 1:
+                raise PermissionError("unified voice session belongs to another user")
     return _voice_binding(row)
 
 
@@ -453,7 +466,18 @@ def end_voice_session_binding(*, session_id: str, user_id: str) -> bool:
                 """,
                 (session_id, user_id),
             )
-            return cur.rowcount == 1
+            ended = cur.rowcount == 1
+            if ended:
+                cur.execute(
+                    """
+                    UPDATE conversation_sessions
+                    SET ended_at = COALESCE(ended_at, NOW())
+                    WHERE session_type = 'voice' AND session_id = %s
+                      AND user_id = %s
+                    """,
+                    (session_id, user_id),
+                )
+            return ended
 
 
 def _voice_binding(row: Any) -> dict[str, Any]:
@@ -677,15 +701,31 @@ def _upsert_conversation_message(
 def record_text_message(
     *,
     user_id: str,
+    username: str,
     session_id: str,
     turn_id: str,
     role: str,
     content: str,
+    rag_trace: dict[str, Any] | None = None,
 ) -> None:
-    """Mirror a text-chat message into the canonical PostgreSQL message table."""
+    """Atomically write one legacy-compatible and canonical text message."""
 
     with get_conn() as conn:
         with conn.cursor() as cur:
+            _lock_or_create_text_session(
+                cur,
+                user_id=user_id,
+                session_id=session_id,
+                username=username,
+            )
+            _upsert_legacy_text_message(
+                cur,
+                session_id=session_id,
+                turn_id=turn_id,
+                role=role,
+                content=content,
+                rag_trace=rag_trace,
+            )
             _upsert_conversation_message(
                 cur,
                 user_id=user_id,
@@ -696,25 +736,210 @@ def record_text_message(
                 metadata={},
                 source_type="text",
             )
+            _refresh_text_session_message_count(
+                cur, session_id=session_id, username=username
+            )
+
+
+def record_text_turn(
+    *,
+    user_id: str,
+    username: str,
+    session_id: str,
+    turn_id: str,
+    user_text: str,
+    assistant_text: str,
+    rag_trace: dict[str, Any] | None = None,
+) -> None:
+    """Atomically persist both sides of a completed text turn."""
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            _lock_or_create_text_session(
+                cur,
+                user_id=user_id,
+                session_id=session_id,
+                username=username,
+            )
+            for role, content, trace in (
+                ("user", user_text, None),
+                ("assistant", assistant_text, rag_trace),
+            ):
+                _upsert_legacy_text_message(
+                    cur,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    role=role,
+                    content=content,
+                    rag_trace=trace,
+                )
+                _upsert_conversation_message(
+                    cur,
+                    user_id=user_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    role=role,
+                    content=content,
+                    metadata={},
+                    source_type="text",
+                )
+            _refresh_text_session_message_count(
+                cur, session_id=session_id, username=username
+            )
+
+
+def _lock_or_create_text_session(
+    cur: Any, *, user_id: str, session_id: str, username: str
+) -> None:
+    cur.execute(
+        """
+        INSERT INTO chat_sessions(session_id, username)
+        VALUES (%s, %s)
+        ON CONFLICT (session_id) DO NOTHING
+        """,
+        (session_id, username),
+    )
+    cur.execute(
+        """
+        SELECT ended_at FROM chat_sessions
+        WHERE session_id = %s AND username = %s
+        FOR UPDATE
+        """,
+        (session_id, username),
+    )
+    session = cur.fetchone()
+    if session is None:
+        raise PermissionError("session belongs to another user")
+    ended_at = session.get("ended_at") if isinstance(session, dict) else session[0]
+    if ended_at is not None:
+        raise ValueError("text session is already finalized")
+    cur.execute(
+        """
+        INSERT INTO conversation_sessions(
+            session_type, session_id, user_id
+        ) VALUES ('text', %s, %s)
+        ON CONFLICT (session_type, session_id) DO UPDATE SET
+            user_id = conversation_sessions.user_id
+        WHERE conversation_sessions.user_id = EXCLUDED.user_id
+        """,
+        (session_id, user_id),
+    )
+    if cur.rowcount != 1:
+        raise PermissionError("unified session belongs to another user")
+
+
+def _upsert_legacy_text_message(
+    cur: Any,
+    *,
+    session_id: str,
+    turn_id: str,
+    role: str,
+    content: str,
+    rag_trace: dict[str, Any] | None,
+) -> None:
+    if not content.strip():
+        return
+    msg_type = "human" if role == "user" else "ai"
+    cur.execute(
+        """
+        INSERT INTO session_messages(
+            session_id, turn_id, msg_type, content, rag_trace
+        ) VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (session_id, turn_id, msg_type)
+            WHERE turn_id IS NOT NULL
+        DO UPDATE SET content = EXCLUDED.content, rag_trace = EXCLUDED.rag_trace
+        """,
+        (
+            session_id,
+            turn_id,
+            msg_type,
+            content,
+            json.dumps(rag_trace, ensure_ascii=False, default=str)
+            if rag_trace
+            else None,
+        ),
+    )
+
+
+def _refresh_text_session_message_count(
+    cur: Any, *, session_id: str, username: str
+) -> None:
+    cur.execute(
+        """
+        UPDATE chat_sessions
+        SET message_count = (
+                SELECT COUNT(*) FROM session_messages WHERE session_id = %s
+            ),
+            updated_at = NOW()
+        WHERE session_id = %s AND username = %s
+        """,
+        (session_id, session_id, username),
+    )
+    if cur.rowcount != 1:
+        raise PermissionError("session belongs to another user")
 
 
 def finalize_voice_session_memory(
     *, user_id: str, session_id: str, summary_version: int
 ) -> dict[str, Any]:
-    """Idempotently close the PostgreSQL episodic/fact-memory loop."""
+    """Idempotently close a voice PostgreSQL episodic/fact-memory loop."""
+
+    return _finalize_session_memory(
+        user_id=user_id,
+        session_id=session_id,
+        summary_version=summary_version,
+        session_type="voice",
+    )
+
+
+def finalize_text_session_memory(
+    *, user_id: str, session_id: str, summary_version: int
+) -> dict[str, Any]:
+    """Idempotently close a text PostgreSQL episodic/fact-memory loop."""
+
+    return _finalize_session_memory(
+        user_id=user_id,
+        session_id=session_id,
+        summary_version=summary_version,
+        session_type="text",
+    )
+
+
+def _finalize_session_memory(
+    *,
+    user_id: str,
+    session_id: str,
+    summary_version: int,
+    session_type: str,
+) -> dict[str, Any]:
+    """Shared transactional finalizer for voice and text sessions."""
 
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT session_id FROM voice_sessions
-                WHERE session_id = %s AND user_id = %s
-                FOR UPDATE
-                """,
-                (session_id, user_id),
-            )
+            if session_type == "voice":
+                cur.execute(
+                    """
+                    SELECT session_id FROM voice_sessions
+                    WHERE session_id = %s AND user_id = %s
+                    FOR UPDATE
+                    """,
+                    (session_id, user_id),
+                )
+            elif session_type == "text":
+                cur.execute(
+                    """
+                    SELECT sessions.session_id
+                    FROM chat_sessions AS sessions
+                    JOIN users ON users.username = sessions.username
+                    WHERE sessions.session_id = %s AND users.user_id = %s
+                    FOR UPDATE OF sessions
+                    """,
+                    (session_id, user_id),
+                )
+            else:
+                raise ValueError("invalid session type")
             if cur.fetchone() is None:
-                raise PermissionError("voice session does not belong to user")
+                raise PermissionError("session does not belong to user")
             cur.execute(
                 """
                 SELECT * FROM session_summaries
@@ -724,6 +949,9 @@ def finalize_voice_session_memory(
             )
             existing = cur.fetchone()
             if existing is not None:
+                _mark_text_session_ended(
+                    cur, session_id=session_id, session_type=session_type
+                )
                 return _finalize_result(cur, dict(existing), created=False)
 
             cur.execute(
@@ -746,13 +974,15 @@ def finalize_voice_session_memory(
             cur.execute(
                 """
                 INSERT INTO session_summaries(
-                    summary_id, session_id, user_id, summary_version, content,
+                    summary_id, session_type, session_id, user_id,
+                    summary_version, content,
                     structured_summary, source_digest, message_count
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
                 """,
                 (
                     summary_id,
+                    session_type,
                     session_id,
                     user_id,
                     summary_version,
@@ -772,6 +1002,7 @@ def finalize_voice_session_memory(
                     user_id=user_id,
                     session_id=session_id,
                     source_type="user_message",
+                    session_type=session_type,
                     source_id=str(message["turn_id"]),
                     source_turn_id=str(message["turn_id"]),
                     source_document_id=None,
@@ -793,29 +1024,75 @@ def finalize_voice_session_memory(
                 document_id = str(payload.get("document_id") or "")
                 if not document_id or document_id in seen_documents:
                     continue
-                if (
-                    payload.get("subject_scope") != "user_specific"
-                    or payload.get("verification_status") not in {"verified", "trusted"}
-                ):
-                    continue
                 preview = str(payload.get("content_preview") or "").strip()
                 if not preview:
                     continue
                 seen_documents.add(document_id)
+                server_verified = _is_server_verified_personal_document_content(
+                    cur,
+                    user_id=user_id,
+                    document_id=document_id,
+                    content=preview,
+                )
                 candidate_count += _insert_candidates(
                     cur,
                     user_id=user_id,
                     session_id=session_id,
                     source_type="personal_document",
+                    session_type=session_type,
                     source_id=document_id,
                     source_turn_id=None,
                     source_document_id=document_id,
                     text=preview,
-                    confirmed=True,
+                    confirmed=server_verified,
                 )
+            _mark_text_session_ended(
+                cur, session_id=session_id, session_type=session_type
+            )
             result = _finalize_result(cur, summary_row, created=True)
             result["created_candidates"] = candidate_count
             return result
+
+
+def _mark_text_session_ended(
+    cur: Any, *, session_id: str, session_type: str
+) -> None:
+    if session_type != "text":
+        return
+    cur.execute(
+        """
+        UPDATE chat_sessions
+        SET ended_at = COALESCE(ended_at, NOW()), updated_at = NOW()
+        WHERE session_id = %s
+        """,
+        (session_id,),
+    )
+    cur.execute(
+        """
+        UPDATE conversation_sessions
+        SET ended_at = COALESCE(ended_at, NOW())
+        WHERE session_type = 'text' AND session_id = %s
+        """,
+        (session_id,),
+    )
+
+
+def _is_server_verified_personal_document_content(
+    cur: Any, *, user_id: str, document_id: str, content: str
+) -> bool:
+    """Trust only an exact content digest registered by server-side processing."""
+
+    normalized = " ".join(unicodedata.normalize("NFKC", content).split())
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    cur.execute(
+        """
+        SELECT 1 FROM trusted_personal_document_contents
+        WHERE user_id = %s AND document_id = %s AND content_sha256 = %s
+          AND status = 'trusted' AND revoked_at IS NULL
+        """,
+        (user_id, document_id, digest),
+    )
+    return cur.fetchone() is not None
 
 
 def _insert_candidates(
@@ -823,6 +1100,7 @@ def _insert_candidates(
     *,
     user_id: str,
     session_id: str,
+    session_type: str,
     source_type: str,
     source_id: str,
     source_turn_id: str | None,
@@ -842,9 +1120,9 @@ def _insert_candidates(
             """
             INSERT INTO medical_fact_memories(
                 memory_id, user_id, memory_type, content, structured_value,
-                status, source_type, source_session_id, source_turn_id,
-                source_document_id, confidence, candidate_key
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                status, source_type, source_session_type, source_session_id,
+                source_turn_id, source_document_id, confidence, candidate_key
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (user_id, candidate_key) DO NOTHING
             """,
             (
@@ -855,6 +1133,7 @@ def _insert_candidates(
                 json.dumps(candidate.structured_value, ensure_ascii=False),
                 "confirmed" if confirmed else "proposed",
                 source_type,
+                session_type,
                 session_id,
                 source_turn_id,
                 source_document_id,
@@ -872,9 +1151,10 @@ def _finalize_result(
     cur.execute(
         """
         SELECT COUNT(*) FROM medical_fact_memories
-        WHERE source_session_id = %s AND deleted_at IS NULL
+        WHERE source_session_type = %s AND source_session_id = %s
+          AND deleted_at IS NULL
         """,
-        (summary["session_id"],),
+        (summary["session_type"], summary["session_id"]),
     )
     count = int(cur.fetchone()["count"])
     return {
@@ -975,10 +1255,11 @@ def correct_medical_fact_memory(
                 """
                 INSERT INTO medical_fact_memories(
                     memory_id, user_id, memory_type, content, structured_value,
-                    status, source_type, source_session_id, confidence,
-                    supersedes_memory_id, candidate_key
+                    status, source_type, source_session_type,
+                    source_session_id, confidence, supersedes_memory_id,
+                    candidate_key
                 ) VALUES (%s, %s, %s, %s, %s, 'confirmed', 'user_correction',
-                          %s, %s, %s, %s)
+                          %s, %s, %s, %s, %s)
                 RETURNING *
                 """,
                 (
@@ -987,6 +1268,7 @@ def correct_medical_fact_memory(
                     replacement_type,
                     content,
                     json.dumps(structured_value, ensure_ascii=False),
+                    old["source_session_type"],
                     old["source_session_id"],
                     confidence,
                     memory_id,

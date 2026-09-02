@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
@@ -13,7 +14,7 @@ from medrag.config.settings import settings
 
 from ..dependencies import get_current_user
 from ..schemas import ChatRequest, ModelItem, ModelsResponse
-from ..session_store import add_message
+from ..session_store import add_turn
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +72,14 @@ async def chat_stream(
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
+    canonical_turn_id = f"text_{uuid.uuid4().hex}"
 
     def _run():
         try:
             for event in service.stream_chat(
                 query=body.message,
                 username=current_user.username,
+                user_id=current_user.user_id,
                 session_id=body.session_id,
                 department=department,
                 provider=body.provider,
@@ -99,20 +102,35 @@ async def chat_stream(
                     break
                 if isinstance(event, Exception):
                     yield f"data: {json.dumps({'type': 'error', 'content': str(event)})}\n\n"
-                    break
+                    return
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if event["type"] == "content":
                     collected_content += event["content"]
+            await asyncio.to_thread(
+                add_turn,
+                body.session_id,
+                user_text=body.message,
+                assistant_text=collected_content,
+                username=current_user.username,
+                user_id=current_user.user_id,
+                turn_id=canonical_turn_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "text turn persistence failed: %s",
+                type(exc).__name__,
+                exc_info=True,
+            )
+            yield (
+                "data: "
+                + json.dumps(
+                    {"type": "error", "content": "消息持久化失败，请重试"},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
         finally:
             yield "data: [DONE]\n\n"
-            # 存入会话（带用户归属）
-            try:
-                add_message(body.session_id, "human", body.message,
-                            username=current_user.username)
-                add_message(body.session_id, "ai", collected_content,
-                            username=current_user.username)
-            except Exception:
-                logger.warning("保存会话消息失败", exc_info=True)
 
     return StreamingResponse(
         event_generator(),

@@ -7,14 +7,12 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from medrag.infrastructure.storage.postgres_client import (
-    session_save as _pg_session_save,
-    session_update as _pg_session_update,
     session_list as _pg_session_list,
     session_get as _pg_session_get,
     session_delete as _pg_session_delete,
-    message_add as _pg_message_add,
     message_list as _pg_message_list,
 )
+from medrag.infrastructure.storage import phase1_repository
 
 from .schemas import SessionSummary, SessionMessage, SessionDetailResponse
 
@@ -32,24 +30,59 @@ def add_message(
     content: str,
     rag_trace: Optional[dict] = None,
     username: str = "",
+    user_id: str = "",
+    turn_id: str = "",
 ) -> None:
-    """向会话追加一条消息。"""
-    if not username:
-        raise ValueError("username is required for session writes")
+    """Atomically append one compatibility and canonical text message."""
 
-    # Ensure session exists
-    existing = _pg_session_get(session_id, username)
-    if existing is None:
-        if not _pg_session_save(session_id, username):
-            raise PermissionError("session belongs to another user")
-        msg_count = 1
-    else:
-        msg_count = existing.get("message_count", 0) + 1
+    if not username or not user_id or not turn_id:
+        raise ValueError("username, user_id, and turn_id are required")
+    if msg_type not in {"human", "ai"}:
+        raise ValueError("unsupported text message type")
+    phase1_repository.record_text_message(
+        user_id=user_id,
+        username=username,
+        session_id=session_id,
+        turn_id=turn_id,
+        role="user" if msg_type == "human" else "assistant",
+        content=content,
+        rag_trace=rag_trace,
+    )
 
-    if not _pg_message_add(session_id, username, msg_type, content, rag_trace):
-        raise PermissionError("session belongs to another user")
-    if not _pg_session_update(session_id, username, msg_count):
-        raise PermissionError("session belongs to another user")
+
+def add_turn(
+    session_id: str,
+    *,
+    user_text: str,
+    assistant_text: str,
+    username: str,
+    user_id: str,
+    turn_id: str,
+    rag_trace: Optional[dict] = None,
+) -> None:
+    """Atomically persist both sides of one completed text turn."""
+
+    phase1_repository.record_text_turn(
+        user_id=user_id,
+        username=username,
+        session_id=session_id,
+        turn_id=turn_id,
+        user_text=user_text,
+        assistant_text=assistant_text,
+        rag_trace=rag_trace,
+    )
+
+
+def finalize_session(
+    session_id: str, *, user_id: str, summary_version: int = 1
+) -> dict:
+    """Idempotently create the text summary and controlled memory candidates."""
+
+    return phase1_repository.finalize_text_session_memory(
+        user_id=user_id,
+        session_id=session_id,
+        summary_version=summary_version,
+    )
 
 
 def get_sessions(username: str) -> List[SessionSummary]:

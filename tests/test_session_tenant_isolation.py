@@ -25,12 +25,10 @@ def test_get_session_hides_another_users_session(monkeypatch):
 
 
 def test_add_message_rejects_session_id_owned_by_another_user(monkeypatch):
-    monkeypatch.setattr(session_store, "_pg_session_get", MagicMock(return_value=None))
-    monkeypatch.setattr(session_store, "_pg_session_save", MagicMock(return_value=False))
-    message_add = MagicMock()
-    session_update = MagicMock()
-    monkeypatch.setattr(session_store, "_pg_message_add", message_add)
-    monkeypatch.setattr(session_store, "_pg_session_update", session_update)
+    message_add = MagicMock(side_effect=PermissionError("another user"))
+    monkeypatch.setattr(
+        session_store.phase1_repository, "record_text_message", message_add
+    )
 
     with pytest.raises(PermissionError, match="another user"):
         session_store.add_message(
@@ -38,34 +36,37 @@ def test_add_message_rejects_session_id_owned_by_another_user(monkeypatch):
             "human",
             "must not be written",
             username="bob",
+            user_id="00000000-0000-0000-0000-000000000002",
+            turn_id="turn-1",
         )
 
-    message_add.assert_not_called()
-    session_update.assert_not_called()
+    message_add.assert_called_once()
 
 
 def test_add_message_scopes_existing_session_write_to_owner(monkeypatch):
+    message_add = MagicMock()
     monkeypatch.setattr(
-        session_store,
-        "_pg_session_get",
-        MagicMock(return_value={"username": "alice", "message_count": 2}),
+        session_store.phase1_repository, "record_text_message", message_add
     )
-    message_add = MagicMock(return_value=True)
-    session_update = MagicMock(return_value=True)
-    monkeypatch.setattr(session_store, "_pg_message_add", message_add)
-    monkeypatch.setattr(session_store, "_pg_session_update", session_update)
 
     session_store.add_message(
         "session-1",
         "human",
         "owner message",
         username="alice",
+        user_id="00000000-0000-0000-0000-000000000001",
+        turn_id="turn-1",
     )
 
     message_add.assert_called_once_with(
-        "session-1", "alice", "human", "owner message", None
+        user_id="00000000-0000-0000-0000-000000000001",
+        username="alice",
+        session_id="session-1",
+        turn_id="turn-1",
+        role="user",
+        content="owner message",
+        rag_trace=None,
     )
-    session_update.assert_called_once_with("session-1", "alice", 3)
 
 
 def test_delete_session_scopes_delete_to_current_user(monkeypatch):

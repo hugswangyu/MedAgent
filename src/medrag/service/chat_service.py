@@ -21,6 +21,7 @@ from medrag.retrieval import (
     get_reranker,
 )
 from medrag.memory import MemorySystem, get_memory_system
+from medrag.infrastructure.storage import phase1_repository
 from medrag.data.user_case_store import (
     UserCaseRetriever,
     get_combined_case_summary,
@@ -187,6 +188,40 @@ class MedicalChatService:
             return memory
 
     @staticmethod
+    def _working_memory_context(memory: MemorySystem) -> str:
+        """Render only in-process recent messages; never recall legacy LTM."""
+
+        lines = []
+        for message in memory.short_term.to_llm_messages()[-10:]:
+            role = "用户" if message.get("role") == "user" else "助手"
+            content = " ".join(str(message.get("content") or "").split()).strip()
+            if content:
+                lines.append(f"{role}：{content}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _record_working_message(
+        memory: MemorySystem, role: str, content: str
+    ) -> None:
+        """Keep session working memory without legacy fact extraction."""
+
+        memory.short_term.add(role, content)
+
+    @staticmethod
+    def _confirmed_memory_context(user_id: Optional[str]) -> str:
+        if not user_id:
+            return ""
+        items = phase1_repository.list_medical_fact_memories(
+            user_id=user_id, statuses=["confirmed"]
+        )
+        facts = [
+            " ".join(str(item.get("content") or "").split())[:500]
+            for item in items[:50]
+            if str(item.get("content") or "").strip()
+        ]
+        return "\n".join(f"- {fact}" for fact in facts)
+
+    @staticmethod
     def _compose_system_context(
         memory_context: str,
         case_summary: Optional[str],
@@ -224,6 +259,7 @@ class MedicalChatService:
         query: str,
         user_case_summary: Optional[str] = None,
         username: Optional[str] = None,
+        user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         department: Optional[str] = None,
         provider: Optional[str] = None,
@@ -248,11 +284,14 @@ class MedicalChatService:
         # 1. 路由（仅需一次，后续所有组件共享此结果）
         route = self.hybrid_retriever.router.route(query)
 
-        # 2. 在写入当前问题前召回历史，避免当前问题在上下文中重复出现。
-        query_emb = self._get_query_embedding(query)
-        memory_context = memory.build_context(
-            query,
-            query_embedding=query_emb,
+        # 2. 只使用当前会话工作记忆和 PostgreSQL confirmed 事实。
+        memory_context = "\n".join(
+            part
+            for part in (
+                self._confirmed_memory_context(user_id),
+                self._working_memory_context(memory),
+            )
+            if part
         )
         if user_case_summary is None and username:
             try:
@@ -263,10 +302,7 @@ class MedicalChatService:
             memory_context, user_case_summary, route,
         )
 
-        if query_emb is not None:
-            memory.add_message_with_embedding("user", query, query_emb)
-        else:
-            memory.add_message("user", query)
+        self._record_working_message(memory, "user", query)
 
         # 3. 所有查询统一走 ReAct 编排
         retrieval_trace: Dict = {}
@@ -311,7 +347,7 @@ class MedicalChatService:
         )
 
         # 5. 记录助手回复
-        memory.store_assistant_reply(result.get("answer", ""))
+        self._record_working_message(memory, "assistant", result.get("answer", ""))
 
         _raw = retrieval_trace.get("raw_result", {})
         _reranked_qa = retrieval_trace.get("reranked_qa", [])
@@ -336,6 +372,7 @@ class MedicalChatService:
         route: dict,
         *,
         username: Optional[str] = None,
+        user_id: Optional[str] = None,
         department: Optional[str] = None,
         provider_name: Optional[str] = None,
         model_name: Optional[str] = None,
@@ -422,6 +459,7 @@ class MedicalChatService:
             query,
             user_case_summary=user_case_summary,
             username=username,
+            user_id=user_id,
             session_id=session_id,
             department=department,
             provider=provider,
@@ -494,12 +532,12 @@ class MedicalChatService:
         """Tool 模式：执行原生工具，直接返回结构化结果。"""
         memory = memory_system or self.memory
         # 记录用户消息
-        memory.add_message("user", query)
+        self._record_working_message(memory, "user", query)
 
         result = self._tool_registry.execute(tool_name, **tool_params)
 
         # 记录助手回复
-        memory.add_message("assistant", result)
+        self._record_working_message(memory, "assistant", result)
 
         return {
             "answer": result,
@@ -522,9 +560,9 @@ class MedicalChatService:
             "type": "rag_step",
             "step": {"key": "tool", "label": "工具调用", "icon": "🔧", "detail": tool_name},
         }
-        memory.add_message("user", query)
+        self._record_working_message(memory, "user", query)
         result = self._tool_registry.execute(tool_name, **tool_params)
-        memory.add_message("assistant", result)
+        self._record_working_message(memory, "assistant", result)
         yield {"type": "content", "content": result}
 
 

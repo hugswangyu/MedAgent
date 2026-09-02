@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 
-from .api import auth, chat, control_v1, documents, internal_v1, sessions
+from .api import auth, chat, control_v1, documents, internal_v1, memories, sessions
 from .auth_manager import init_auth
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,7 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
 app.include_router(documents.router, prefix="/documents", tags=["documents"])
+app.include_router(memories.router, prefix="/memories", tags=["memories"])
 app.include_router(control_v1.router, prefix="/control/v1", tags=["control-plane"])
 app.include_router(
     internal_v1.router,
