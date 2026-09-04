@@ -26,6 +26,8 @@ tmp_data/*.json
 src/tmp_data/
 user_uploads/
 tmp_data/user_credentials.json
+/fastapi-startup.log
+/fastapi-startup.err
 
 # Local large datasets and ad-hoc test files
 Chinese-medical-dialogue-data/

@@ -3,7 +3,7 @@
 日期：2026-09-02
 阶段：迁仓与统一前端
 状态：代码迁移、离线回归和 Next.js 生产构建通过；真实 PostgreSQL、LiveKit 与语音 provider 端到端仍待凭据
-提交：未提交
+提交：`e0b45ba`（Phase 4 迁仓与统一前端）
 
 ## Phase 3 前置状态
 
