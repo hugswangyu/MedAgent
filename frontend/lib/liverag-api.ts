@@ -457,7 +457,7 @@ async function parseError(response: Response) {
   }
 
   return new LiveRagApiError(
-    `LiveRAG API ${response.status}: ${response.statusText}`,
+    `医学资料服务 ${response.status}: ${response.statusText}`,
     response.status
   );
 }
@@ -489,7 +489,7 @@ async function fetchEnvelope<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (envelope.status !== 'ok') {
     throw new LiveRagApiError(
-      envelope.error?.message ?? 'LiveRAG API returned an error',
+      envelope.error?.message ?? '医学资料服务暂时不可用',
       undefined,
       envelope.error?.type
     );

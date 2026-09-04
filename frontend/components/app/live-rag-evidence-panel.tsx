@@ -181,9 +181,7 @@ export function LiveRagEvidencePanel({
               <DatabaseIcon className="size-4" />
               <h2 className="truncate text-base font-semibold">回答依据</h2>
             </div>
-            <p className="text-muted-foreground mt-1 text-xs">
-              通话中只查看引用内容，不切换知识库。
-            </p>
+            <p className="text-muted-foreground mt-1 text-xs">这里展示当前回答实际引用的资料。</p>
           </div>
           <button
             type="button"
@@ -198,7 +196,7 @@ export function LiveRagEvidencePanel({
         <div className="min-h-0 overflow-auto p-4">
           <section className="bg-muted/30 mb-4 rounded-2xl p-3">
             <div className="text-muted-foreground text-[11px] font-semibold tracking-wider uppercase">
-              当前知识库
+              当前资料库
             </div>
             <div className="mt-1 truncate text-sm font-semibold">{scopeLabel(runtime)}</div>
           </section>
@@ -223,10 +221,10 @@ export function LiveRagEvidencePanel({
               <div className="border-border/60 grid min-h-28 place-items-center rounded-2xl border border-dashed p-4 text-center">
                 <div>
                   <div className="text-sm font-semibold">
-                    {latestRag?.status === 'miss' ? '本轮未命中知识库' : '当前还没有引用知识库内容'}
+                    {latestRag?.status === 'miss' ? '本轮未找到相关资料' : '当前还没有引用医学资料'}
                   </div>
                   <p className="text-muted-foreground mt-1 text-xs">
-                    有知识库命中后，这里会显示被引用的文档和片段。
+                    回答引用资料后，这里会显示对应文档和片段。
                   </p>
                 </div>
               </div>

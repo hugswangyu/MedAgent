@@ -39,6 +39,28 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+.medical-page-bg {
+  background:
+    radial-gradient(circle at 88% 8%, rgb(214 228 233 / 0.58), transparent 26rem),
+    linear-gradient(145deg, #f4f7f7 0%, #eef3f4 100%);
+}
+
+.medical-sidebar {
+  background:
+    radial-gradient(circle at 16% 10%, rgb(144 183 199 / 0.17), transparent 18rem),
+    linear-gradient(160deg, #263f4d 0%, #1f3542 54%, #192f3a 100%);
+}
+
+.medical-chat-scroll {
+  background:
+    linear-gradient(rgb(250 252 252 / 0.86), rgb(245 248 248 / 0.94)),
+    radial-gradient(circle at 20% 10%, rgb(114 151 169 / 0.1), transparent 22rem);
+}
+
+.medical-evidence[open] summary svg:last-child {
+  transform: rotate(180deg);
+}
+
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
@@ -120,9 +142,5 @@
   }
   body {
     @apply bg-background text-foreground;
-  }
-
-  body[data-liverag-session='connected'] [data-liverag-app-header] {
-    display: none;
   }
 }

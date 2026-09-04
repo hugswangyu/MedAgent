@@ -57,13 +57,19 @@ export async function POST(request: NextRequest) {
     const knowledge = await liveragFetch<KnowledgeState>('/session/knowledge-base', token);
     const kbId = knowledge.active_session?.kb_id ?? knowledge.configured?.kb_id;
     if (!kbId) {
-      return NextResponse.json({ detail: '请先在个人知识库中选择一个可用知识库' }, { status: 409 });
+      return NextResponse.json({ detail: '请先选择一组可用的病历或医学资料' }, { status: 409 });
     }
+    const requestedConversationId = request.nextUrl.searchParams.get('conversation_id') ?? '';
+    const conversationId = /^conv_[a-zA-Z0-9]{8,48}$/.test(requestedConversationId)
+      ? requestedConversationId
+      : `conv_${crypto.randomUUID().replaceAll('-', '')}`;
     const session = await liveragFetch<VoiceSession>('/voice/sessions', token, {
       method: 'POST',
       body: JSON.stringify({
         kb_id: kbId,
-        client_id: request.headers.get('x-request-id') ?? crypto.randomUUID(),
+        // MedLive owns its session_id. client_id safely correlates it with the
+        // parent medical conversation shown by this web client.
+        client_id: conversationId,
         client_type: 'web',
       }),
     });
@@ -75,6 +81,7 @@ export async function POST(request: NextRequest) {
         participantName: session.identity ?? session.livekit?.participant_identity ?? 'user',
         participantToken: session.token,
         sessionId: session.session_id,
+        conversationId,
       },
       { headers: { 'cache-control': 'no-store' } }
     );

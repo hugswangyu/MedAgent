@@ -1049,7 +1049,7 @@ export function LiveRagKnowledgePanel({ open, onOpenChange }: LiveRagKnowledgePa
     >
       <button
         type="button"
-        aria-label="关闭知识库面板"
+        aria-label="关闭医学资料面板"
         className={cn(
           'bg-foreground/8 absolute inset-0 cursor-default backdrop-blur-[2px] transition-opacity duration-200',
           open ? 'opacity-100' : 'pointer-events-none opacity-0'
@@ -1059,7 +1059,7 @@ export function LiveRagKnowledgePanel({ open, onOpenChange }: LiveRagKnowledgePa
       <aside
         role="dialog"
         aria-modal="true"
-        aria-label="知识库管理"
+        aria-label="病历与医学资料管理"
         className={cn(
           'bg-background relative grid h-svh w-full max-w-none grid-cols-1 overflow-hidden border-0 shadow-[0_28px_90px_rgba(0,0,0,0.18)] transition duration-200 ease-out sm:h-[min(690px,calc(100vh-36px))] sm:max-w-[980px] sm:grid-cols-[230px_minmax(0,1fr)] sm:rounded-2xl sm:border',
           open ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-6 scale-[0.98] opacity-0'
@@ -1068,16 +1068,16 @@ export function LiveRagKnowledgePanel({ open, onOpenChange }: LiveRagKnowledgePa
         <section className="bg-muted/40 hidden min-h-0 sm:grid sm:grid-rows-[auto_minmax(0,1fr)_auto]">
           <header className="flex items-center justify-between gap-3 p-3.5">
             <div className="min-w-0">
-              <div className="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
-                LiveRAG
+              <div className="text-muted-foreground text-xs font-semibold tracking-wider">
+                MEDAGENT 资料中心
               </div>
-              <h2 className="truncate text-base font-semibold">个人知识库</h2>
+              <h2 className="truncate text-base font-semibold">病历与医学资料</h2>
             </div>
             <button
               type="button"
               onClick={() => setCreating((value) => !value)}
               className="hover:bg-background bg-background/75 grid size-8 shrink-0 place-items-center rounded-full"
-              aria-label="新建知识库"
+              aria-label="新建资料库"
             >
               <PlusIcon className="size-4" />
             </button>
@@ -1180,17 +1180,17 @@ export function LiveRagKnowledgePanel({ open, onOpenChange }: LiveRagKnowledgePa
                 <div className="flex min-w-0 items-center gap-2">
                   <DatabaseIcon className="size-4 shrink-0" />
                   <h2 className="truncate text-base font-semibold">
-                    {selectedKnowledgeBase?.name ?? '个人知识库'}
+                    {selectedKnowledgeBase?.name ?? '病历与医学资料'}
                   </h2>
                   {selectedKbId === activeKbId && (
                     <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300">
-                      通话锁定
+                      本次语音使用中
                     </span>
                   )}
                 </div>
                 <p className="text-muted-foreground mt-1 hidden text-xs sm:block">
                   {selectedKnowledgeBase?.description ||
-                    '每个知识库独立索引，语音对话一次只使用一个知识库。'}
+                    '每组资料独立管理，语音咨询一次使用一组资料。'}
                 </p>
               </div>
 
@@ -1199,7 +1199,7 @@ export function LiveRagKnowledgePanel({ open, onOpenChange }: LiveRagKnowledgePa
                   type="button"
                   onClick={() => void refreshAll(selectedKbId ?? undefined)}
                   className="hover:bg-muted grid size-8 place-items-center rounded-full border"
-                  aria-label="刷新知识库"
+                  aria-label="刷新医学资料"
                   disabled={loading}
                 >
                   <RefreshCwIcon className={cn('size-4', loading && 'animate-spin')} />
@@ -1241,7 +1241,7 @@ export function LiveRagKnowledgePanel({ open, onOpenChange }: LiveRagKnowledgePa
                   <input
                     value={newKbName}
                     onChange={(event) => setNewKbName(event.target.value)}
-                    placeholder="知识库名称"
+                    placeholder="资料库名称"
                     className="bg-background/80 focus:border-foreground h-9 rounded-xl border px-3 text-xs outline-none"
                   />
                   <input
@@ -1326,10 +1326,10 @@ export function LiveRagKnowledgePanel({ open, onOpenChange }: LiveRagKnowledgePa
                         disabled={mutating || locked || selectedKbId === configuredKbId}
                         title={
                           locked
-                            ? '通话中不能切换默认知识库'
+                            ? '语音咨询中不能切换默认资料'
                             : selectedKbId === configuredKbId
-                              ? '已是默认知识库'
-                              : '设为默认知识库'
+                              ? '已是默认资料'
+                              : '设为默认资料'
                         }
                         className={cn(
                           'inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs transition disabled:cursor-not-allowed',
@@ -1340,7 +1340,7 @@ export function LiveRagKnowledgePanel({ open, onOpenChange }: LiveRagKnowledgePa
                         )}
                       >
                         <CheckIcon className="size-3.5" />
-                        {selectedKbId === configuredKbId ? '当前默认' : '设为默认'}
+                        {selectedKbId === configuredKbId ? '当前使用' : '设为默认'}
                       </button>
                       <button
                         type="button"
@@ -1442,13 +1442,13 @@ export function LiveRagKnowledgePanel({ open, onOpenChange }: LiveRagKnowledgePa
                 <input
                   value={textSource}
                   onChange={(event) => setTextSource(event.target.value)}
-                  placeholder="文件名，例如 liverag-note.md"
+                  placeholder="文件名，例如 门诊记录.md"
                   className="bg-background/80 focus:border-foreground h-9 rounded-xl border px-3 text-xs outline-none"
                 />
                 <textarea
                   value={textContent}
                   onChange={(event) => setTextContent(event.target.value)}
-                  placeholder="粘贴要导入知识库的文本"
+                  placeholder="粘贴要导入的病历或医学资料"
                   className="bg-background/80 focus:border-foreground min-h-24 resize-y rounded-xl border p-3 text-xs leading-relaxed outline-none"
                 />
                 <div className="flex justify-end gap-2">
@@ -1495,7 +1495,7 @@ export function LiveRagKnowledgePanel({ open, onOpenChange }: LiveRagKnowledgePa
                     <div>
                       <div className="text-sm font-semibold">这里还没有文件</div>
                       <p className="text-muted-foreground mt-1 text-xs">
-                        上传文件或导入文本后，当前知识库会建立独立索引。
+                        上传文件或导入文本后，系统会整理资料供咨询时参考。
                       </p>
                     </div>
                     <label className="bg-foreground text-background inline-flex h-9 cursor-pointer items-center gap-2 rounded-full px-4 text-xs font-semibold">

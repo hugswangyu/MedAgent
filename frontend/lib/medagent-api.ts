@@ -93,12 +93,14 @@ export async function streamTextChat(
     provider?: string;
     model?: string;
   },
-  onEvent: (event: ChatEvent) => void
+  onEvent: (event: ChatEvent) => void,
+  signal?: AbortSignal
 ) {
   const response = await fetch('/api/medagent/chat/stream', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
+    signal,
   });
   if (!response.ok || !response.body) throw new Error(await errorMessage(response));
 
@@ -125,4 +127,40 @@ export async function streamTextChat(
     }
     if (done) break;
   }
+}
+
+export interface SessionSummary {
+  session_id: string;
+  message_count: number;
+  updated_at: string;
+}
+
+export interface SessionDetail {
+  session_id: string;
+  messages: Array<{
+    type: 'human' | 'ai';
+    content: string;
+    rag_trace?: Record<string, unknown> | null;
+  }>;
+}
+
+export function listSessions() {
+  return medagentJson<{ sessions: SessionSummary[] }>('/sessions');
+}
+
+export function getSession(sessionId: string) {
+  return medagentJson<SessionDetail>('/sessions/' + encodeURIComponent(sessionId));
+}
+
+export async function register(username: string, password: string) {
+  const response = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) throw new Error(await errorMessage(response));
+  return (await response.json()) as {
+    user_id: string;
+    username: string;
+  };
 }

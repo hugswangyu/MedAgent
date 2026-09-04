@@ -33,20 +33,20 @@ export interface AppConfig {
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
-  companyName: 'LiveKit',
-  pageTitle: 'LiveRAG 语音知识库助手',
-  pageDescription: '基于 LiveKit 的实时语音知识库助手',
+  companyName: 'MedAgent',
+  pageTitle: 'MedAgent 智能医疗助手',
+  pageDescription: '安全、清晰的中文医疗咨询与健康资料助手',
 
   supportsChatInput: true,
-  supportsVideoInput: true,
-  supportsScreenShare: true,
+  supportsVideoInput: false,
+  supportsScreenShare: false,
   isPreConnectBufferEnabled: true,
 
-  logo: '/lk-logo.svg',
-  accent: '#002cf2',
-  logoDark: '/lk-logo-dark.svg',
-  accentDark: '#1fd5f9',
-  startButtonText: '开始对话',
+  logo: '/medagent-logo.svg',
+  accent: '#587a8e',
+  logoDark: '/medagent-logo.svg',
+  accentDark: '#8fb0c0',
+  startButtonText: '开始语音咨询',
 
   // optional: audio visualization configuration
   // audioVisualizerType: 'bar',

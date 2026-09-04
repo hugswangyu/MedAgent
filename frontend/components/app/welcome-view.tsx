@@ -43,7 +43,7 @@ export const WelcomeView = ({
         <WelcomeImage />
 
         <p className="text-foreground max-w-prose pt-1 leading-6 font-medium">
-          与你的实时语音知识库助手对话
+          与 MedAgent 医疗助手开始咨询
         </p>
 
         <Button
@@ -60,7 +60,7 @@ export const WelcomeView = ({
           className="bg-foreground text-background hover:bg-foreground/90 border-foreground mt-3 w-64 rounded-full border font-mono text-xs font-bold tracking-wider"
         >
           <DatabaseIcon className="size-4" />
-          知识库
+          病历与医学资料
         </Button>
         <Button
           size="lg"

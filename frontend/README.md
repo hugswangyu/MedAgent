@@ -1,264 +1,63 @@
-# Agent Starter for React
+# MedAgent 前端
 
-This is a starter template for [LiveKit Agents](https://docs.livekit.io/agents) that provides a simple voice interface using [Agents UI](https://livekit.io/ui) components and [LiveKit JavaScript SDK](https://github.com/livekit/client-sdk-js). It supports [voice](https://docs.livekit.io/agents/start/voice-ai), [transcriptions](https://docs.livekit.io/agents/build/text/), and [virtual avatars](https://docs.livekit.io/agents/integrations/avatar).
+MedAgent 的统一 Web 前端，基于 Next.js 15、React 19 与 TypeScript。产品界面以中文医疗咨询为核心，实时语音由 MedLive/LiveKit 提供底层能力。
 
-Also available for:
-[Android](https://github.com/livekit-examples/agent-starter-android) • [Flutter](https://github.com/livekit-examples/agent-starter-flutter) • [Swift](https://github.com/livekit-examples/agent-starter-swift) • [React Native](https://github.com/livekit-examples/agent-starter-react-native)
+## 主要体验
 
-<picture>
-  <source srcset="./.github/assets/readme-hero-dark.webp" media="(prefers-color-scheme: dark)">
-  <source srcset="./.github/assets/readme-hero-light.webp" media="(prefers-color-scheme: light)">
-  <img src="./.github/assets/readme-hero-light.webp" alt="App screenshot">
-</picture>
+- 登录后默认进入“医疗咨询”。
+- 文字输入与语音输入位于同一个输入区，切换方式不会跳页或清空时间线。
+- 文字消息、实时语音转写、助手回答和逐回答依据显示在同一条时间线。
+- 病历/医学资料、历史会话、健康档案和设置是辅助功能。
+- 回答依据依附于具体回答，默认折叠。
+- 桌面端使用医疗工作台侧栏，移动端使用底部导航和安全区适配。
 
-### Features:
+## 安全边界
 
-- Real-time voice interaction with LiveKit Agents
-- Camera video streaming support
-- Screen sharing capabilities
-- Multiple audio visualizer styles (`bar`, `grid`, `radial`, `wave`, `aura`)
-- Virtual avatar integration
-- Light/dark theme switching with system preference detection
-- Customizable branding, colors, and UI text via configuration
+浏览器不保存 JWT。登录和注册响应中的访问令牌由 Next.js 路由写入 HttpOnly Cookie：
 
-This template is built with Next.js and is free for you to use or modify as you see fit.
+- MedAgent 请求经同源 /api/medagent/\* 代理。
+- MedLive 请求经同源 /api/liverag/\* 兼容代理。
+- 语音 session 由 /api/token 使用 HttpOnly Cookie 在服务端创建。
+- 浏览器端不能读取访问令牌或当前 voice session cookie。
 
-### Project structure
+请勿恢复旧版使用 localStorage 保存 JWT 的实现。frontend-legacy/ 只作为迁移参考和兼容入口。
 
-This starter uses the [Agents UI](https://livekit.io/ui) components for core UI elements like media controls, audio visualizers, chat transcripts, and providing session data. Shadcn installs components into `components/` folder so you can customize them like any other local component.
+## 统一会话模型
 
-```
-agent-starter-react/
-├── app/
-│   ├── api/
-├── components/
-│   ├── agents-ui/     - Agents UI components
-│   ├── ai-elements/   - AI Elements components
-│   ├── app/           - App-specific components
-│   ├── ui/            - Primitive shadcn/ui components
-├── fonts/
-├── hooks/
-├── lib/
-├── public/
-└── package.json
-```
+前端为每次可见咨询创建父 conversation_id：
 
-Business logic lives within the `components/app` folder. It's here where the application's state and behavior is managed and the various Shadcn UI components are composed together.
+    conversation_id: conv_<random>
+    ├─ 文字子会话: web_conv_<random>
+    └─ 语音子会话: vs_<server-generated>
+       └─ MedLive client_id = conv_<random>
 
-| File                  | Description                                                                                                                                           |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session-view.tsx`    | Initializes the application, and LiveKit session. Renders the view controller and session UI including chat transcript, media tiles, and control bar. |
-| `view-controller.tsx` | Manages the transitions between the welcome and session views based on the LiveKit session state.                                                     |
-| `welcome-view.tsx`    | Renders the welcome UI when the LiveKit session is not connected.                                                                                     |
-| `chat-transcript.tsx` | Manages the chat transcript transitions.                                                                                                              |
-| `tile-layout.tsx`     | Manages the layout and transition of media tiles in various application states.                                                                       |
+frontend/lib/medical-conversation.ts 负责合并文字消息、LiveKit 实时转写和 MedLive 持久化语音轮次，并优先保留带回答依据的持久化版本。
 
-### Component usage
+当前边界：
 
-Most Agents UI components require access to a LiveKit session object for access to values like agent state or audio tracks. A Session object can be created from a [TokenSource](/reference/client-sdk-js/variables/TokenSource.html), and provided by wrapping the component in an [AgentSessionProvider](/reference/components/shadcn/component/agent-session-provider).
+- 父 ID 已在两条管线中可关联，但后端仍以不同 session_id 保存文字和语音。
+- 同一登录用户共享健康档案。
+- 语音使用当前选中的病历/医学资料库；现有 MedAgent 文字接口的 knowledge_base 字段是医疗科室语义，不等同于 MedLive 资料库 ID，因此本次没有错误地把资料库 ID 注入文字接口。
+- 因后端短期上下文仍按子会话隔离，文字模型不会自动看到刚刚的语音轮次，语音模型也不会自动看到本页文字轮次；界面将其表述为“同一咨询记录”，不宣称底层完整上下文已经互通。
 
-See [`components/app/app.tsx`](./components/app/app.tsx) for an example of how this is done in this app.
+要实现真正共享的短期上下文，后续应由后端增加正式的 parent conversation 契约，并在两个编排器生成前共同读取其规范化消息。
 
-### Customizing components
+## 本地开发
 
-Agents UI components, like most Shadcn components, take as many primitive attributes as possible. For example, the [AgentControlBar](/reference/components/shadcn/component/agent-control-bar/page.mdoc) component extends `HTMLAttributes<HTMLDivElement>`, so you can pass any props that a div supports. This makes it easy to extend the component with your own styles or functionality.
+安装依赖后运行 pnpm dev。
 
-You can edit any Agents UI component's source code in the `components/agents-ui` directory. For style changes, we recommend passing in tailwind classes to override the default styles. Take a look at the source code to get a sense of how to override a component's default styles.
+常用校验：
 
-### Updating components
+- pnpm typecheck
+- pnpm test
+- pnpm build
 
-To update the Agents UI components to the latest publication, run the following command:
+Windows 本地构建使用标准 Next.js 输出，避免普通账户无法创建 standalone 符号链接；Linux 与容器构建继续生成 standalone 输出。
 
-```bash
-pnpm shadcn:install
-```
+## 关键文件
 
-> [!NOTE]
-> The CLI will ask before overwriting any modified files so you can avoid losing any customizations you might have made.
-
-### Installing components
-
-```bash
-pnpm dlx shadcn@latest add @agents-ui/{component-name-a} @agents-ui/{component-name-b}
-```
-
-## Getting started
-
-> [!TIP]
-> If you'd like to try this application without modification, you can deploy an instance in just a few clicks with [LiveKit Cloud Sandbox](https://cloud.livekit.io/projects/p_/sandbox/templates/agent-starter-react).
-
-[![Open on LiveKit](https://img.shields.io/badge/Open%20on%20LiveKit%20Cloud-002CF2?style=for-the-badge&logo=external-link)](https://cloud.livekit.io/projects/p_/sandbox/templates/agent-starter-react)
-
-Run the following command to automatically clone this template.
-
-```bash
-lk app create --template agent-starter-react
-```
-
-Then run the app with:
-
-```bash
-pnpm install
-pnpm dev
-```
-
-And open http://localhost:3000 in your browser.
-
-You'll also need an agent to speak with. Try our starter agent for [Python](https://github.com/livekit-examples/agent-starter-python), [Node.js](https://github.com/livekit-examples/agent-starter-node), or [create your own from scratch](https://docs.livekit.io/agents/start/voice-ai/).
-
-## Configuration
-
-This starter is designed to be flexible so you can adapt it to your specific agent use case. You can easily configure it to work with different types of inputs and outputs:
-
-#### Example: App configuration (`app-config.ts`)
-
-```ts
-export const APP_CONFIG_DEFAULTS: AppConfig = {
-  companyName: 'LiveKit',
-  pageTitle: 'LiveKit Voice Agent',
-  pageDescription: 'A voice agent built with LiveKit',
-
-  supportsChatInput: true,
-  supportsVideoInput: true,
-  supportsScreenShare: true,
-  isPreConnectBufferEnabled: true,
-
-  logo: '/lk-logo.svg',
-  accent: '#002cf2',
-  logoDark: '/lk-logo-dark.svg',
-  accentDark: '#1fd5f9',
-  startButtonText: 'Start call',
-
-  // optional: audio visualization configuration
-  // audioVisualizerColor: '#002cf2',
-  // audioVisualizerColorDark: '#1fd5f9',
-  // audioVisualizerType: 'bar',
-  // audioVisualizerBarCount: 5,
-  // audioVisualizerType: 'radial',
-  // audioVisualizerRadialBarCount: 24,
-  // audioVisualizerRadialRadius: 100,
-  // audioVisualizerType: 'grid',
-  // audioVisualizerGridRowCount: 25,
-  // audioVisualizerGridColumnCount: 25,
-  // audioVisualizerType: 'wave',
-  // audioVisualizerWaveLineWidth: 3,
-  // audioVisualizerType: 'aura',
-  // audioVisualizerAuraColorShift: 0.3,
-
-  // agent dispatch configuration
-  agentName: undefined,
-
-  // LiveKit Cloud Sandbox configuration
-  sandboxId: undefined,
-};
-```
-
-You can update these values in [`app-config.ts`](./app-config.ts) to customize branding, features, and UI text for your deployment.
-
-#### Audio visualizer presets
-
-Set `audioVisualizerType` in [`app-config.ts`](./app-config.ts) to switch visualizer styles:
-
-- `bar` (default): vertical bars with optional `audioVisualizerBarCount`
-- `grid`: dot grid with `audioVisualizerGridRowCount` and `audioVisualizerGridColumnCount`
-- `radial`: circular bars with `audioVisualizerRadialBarCount` and `audioVisualizerRadialRadius`
-- `wave`: oscilloscope-style wave with `audioVisualizerWaveLineWidth`
-- `aura`: shader-based aura with `audioVisualizerAuraColorShift`
-
-Use `audioVisualizerColor` to set a shared accent color across all visualizer modes.
-
-> [!NOTE]
-> The `sandboxId` is for the LiveKit Cloud Sandbox environment.
-> It is not used for local development.
-
-#### Environment Variables
-
-You'll also need to configure your LiveKit credentials in `.env.local` (copy `.env.example` if you don't have one):
-
-```env
-LIVEKIT_API_KEY=your_livekit_api_key
-LIVEKIT_API_SECRET=your_livekit_api_secret
-LIVEKIT_URL=https://your-livekit-server-url
-
-# Agent dispatch (https://docs.livekit.io/agents/server/agent-dispatch)
-# Leave AGENT_NAME blank to enable automatic dispatch
-# Provide an agent name to enable explicit dispatch
-AGENT_NAME=
-```
-
-These are required for the voice agent functionality to work with your LiveKit project.
-
-## Contributing
-
-This template is open source and we welcome contributions! Please open a PR or issue through GitHub, and don't forget to join us in the [LiveKit Community Slack](https://livekit.io/join-slack)!
-
-## Docker 本地联调
-
-本项目已提供前端容器构建文件：
-
-- `Dockerfile`: Next.js standalone production 镜像
-- `.dockerignore`: 排除本地依赖、构建产物和密钥文件
-- `docker-compose.yml`: 前端单容器示例
-
-### 单独构建镜像
-
-```bash
-docker build -t liverag-frontend:local .
-```
-
-### 单独运行前端容器
-
-```bash
-docker run --rm -p 3001:3000 \
-  -e LIVEKIT_URL=ws://127.0.0.1:7880 \
-  -e LIVEKIT_API_KEY=my-dev-key \
-  -e LIVEKIT_API_SECRET=my-dev-secret \
-  -e AGENT_NAME=my-agent \
-  -e LIVERAG_API_BASE=http://host.docker.internal:9821 \
-  -e ALLOW_INSECURE_TOKEN_API=true \
-  liverag-frontend:local
-```
-
-打开：
-
-```text
-http://127.0.0.1:3001
-```
-
-### 使用 compose
-
-```bash
-docker compose up -d --build
-```
-
-默认端口：
-
-```text
-前端：http://127.0.0.1:3001
-LiveRAG 管理 API：http://127.0.0.1:9821
-LiveKit：ws://127.0.0.1:7880
-```
-
-### 地址规则
-
-`LIVEKIT_URL` 是 `/api/token` 返回给浏览器的地址，所以本地 Docker 联调时应填写浏览器可访问地址，例如：
-
-```env
-LIVEKIT_URL=ws://127.0.0.1:7880
-```
-
-`LIVERAG_API_BASE` 是 Next.js 服务端代理访问 LiveRAG 管理 API 的地址：
-
-```env
-# 前端容器访问宿主机后端
-LIVERAG_API_BASE=http://host.docker.internal:9821
-
-# 如果前端和后端在同一个 docker-compose 网络，并且后端服务名叫 liverag
-LIVERAG_API_BASE=http://liverag:9821
-```
-
-`NEXT_PUBLIC_LIVERAG_API_BASE` 通常不用设置，默认让浏览器访问同源代理 `/api/liverag`。
-
-### 安全说明
-
-`ALLOW_INSECURE_TOKEN_API=true` 只用于本地联调。正式部署时不要直接暴露当前 `/api/token`，应改成带用户鉴权的服务端 token 接口。
+- components/app/unified-app.tsx：登录、医疗信息架构、响应式应用外壳。
+- components/app/medical-consultation.tsx：统一时间线、文字流、语音控制和逐回答依据。
+- lib/medical-conversation.ts：父会话标识、时间线聚合、模式与语音状态映射。
+- app/api/token/route.ts：安全创建语音子会话并写入 HttpOnly session cookie。
+- lib/medagent-api.ts：文字流、历史会话和健康档案 API。

@@ -54,11 +54,11 @@ interface LiveRagSettingsPanelProps {
 type SettingsTab = 'general' | 'retrieval' | 'voice' | 'context' | 'agent';
 
 const SETTINGS_TABS: Array<{ value: SettingsTab; label: string; description: string }> = [
-  { value: 'general', label: '通用', description: '显示与 RAG 开关' },
-  { value: 'retrieval', label: '检索', description: '知识库查询参数' },
-  { value: 'voice', label: '语音模型', description: 'LLM / STT / TTS' },
-  { value: 'context', label: '知识库上下文', description: '概览与历史压缩' },
-  { value: 'agent', label: 'Agent 设定', description: '提示词与人设' },
+  { value: 'general', label: '通用', description: '显示与资料引用' },
+  { value: 'retrieval', label: '资料检索', description: '医学资料查询参数' },
+  { value: 'voice', label: '语音模型', description: '高级语音服务配置' },
+  { value: 'context', label: '资料上下文', description: '概览与历史整理' },
+  { value: 'agent', label: '助手设定', description: '高级行为配置' },
 ];
 
 function NumberInput({
@@ -1001,7 +1001,7 @@ export function LiveRagSettingsPanel({ open, onOpenChange }: LiveRagSettingsPane
               <h2 className="truncate text-base font-semibold">设置</h2>
             </div>
             <p className="text-muted-foreground mt-1 text-[11px]">
-              显示、知识库检索、模型、提示词与上下文配置。
+              显示、医学资料检索、语音与助手高级配置。
             </p>
           </div>
           <button
@@ -1048,7 +1048,7 @@ export function LiveRagSettingsPanel({ open, onOpenChange }: LiveRagSettingsPane
                       <SettingsRow label="界面显示">
                         <ThemeSettingControl />
                       </SettingsRow>
-                      <SettingsRow label="实时语音 RAG" hint="关闭后对话不会查询知识库">
+                      <SettingsRow label="语音引用医学资料" hint="关闭后语音咨询不会查询资料">
                         <ToggleSwitch
                           checked={config.enabled ?? true}
                           onChange={(checked) =>
@@ -1062,8 +1062,8 @@ export function LiveRagSettingsPanel({ open, onOpenChange }: LiveRagSettingsPane
 
                 {activeTab === 'retrieval' && (
                   <div className="grid gap-3 sm:gap-4">
-                    <SettingsSection title="知识库检索">
-                      <SettingsRow label="RAG 调用模式">
+                    <SettingsSection title="医学资料检索">
+                      <SettingsRow label="资料调用方式">
                         <SelectBox
                           value={config.rag_tool_mode === 'never' ? 'never' : 'auto'}
                           onChange={(value) =>
@@ -1267,7 +1267,7 @@ export function LiveRagSettingsPanel({ open, onOpenChange }: LiveRagSettingsPane
 
                 {activeTab === 'context' && (
                   <div className="grid gap-3 sm:gap-4">
-                    <SettingsSection title="知识库上下文模型">
+                    <SettingsSection title="资料上下文模型">
                       <div className="grid gap-3 py-3">
                         {contextModelError && (
                           <div className="text-muted-foreground rounded-xl border border-dashed p-3 text-xs">
@@ -1275,8 +1275,8 @@ export function LiveRagSettingsPanel({ open, onOpenChange }: LiveRagSettingsPane
                           </div>
                         )}
                         <ModelConfigGroup
-                          title="Context Model"
-                          description="用于生成知识库概览，并在挂断后压缩当前知识库的对话历史。"
+                          title="资料整理模型"
+                          description="用于生成资料概览，并在语音结束后整理本次咨询历史。"
                           badge={contextModelConfig.effective ?? 'Context'}
                         >
                           <TextInput
@@ -1342,13 +1342,10 @@ export function LiveRagSettingsPanel({ open, onOpenChange }: LiveRagSettingsPane
                       </div>
                     </SettingsSection>
 
-                    <SettingsSection title="知识库概览">
+                    <SettingsSection title="资料概览">
                       <div className="grid gap-3 py-3">
                         {knowledgeBases.length > 0 ? (
-                          <SettingsRow
-                            label="当前知识库"
-                            hint="每个知识库都有独立的 knowledge_overview.md"
-                          >
+                          <SettingsRow label="当前资料库" hint="每组资料维护独立概览">
                             <SelectBox
                               value={contextKbId ?? knowledgeBases[0]?.kb_id ?? ''}
                               onChange={(value) => void handleContextKnowledgeBaseChange(value)}
@@ -1360,7 +1357,7 @@ export function LiveRagSettingsPanel({ open, onOpenChange }: LiveRagSettingsPane
                           </SettingsRow>
                         ) : (
                           <div className="text-muted-foreground rounded-xl border border-dashed p-3 text-xs">
-                            暂无可用知识库。
+                            暂无可用资料库。
                           </div>
                         )}
 
@@ -1371,12 +1368,12 @@ export function LiveRagSettingsPanel({ open, onOpenChange }: LiveRagSettingsPane
                         )}
 
                         <label className="grid gap-2">
-                          <span className="text-sm font-semibold">knowledge_overview.md</span>
+                          <span className="text-sm font-semibold">资料概览</span>
                           <textarea
                             value={contextOverviewContent}
                             onChange={(event) => setContextOverviewContent(event.target.value)}
                             disabled={!contextKbId || !contextOverviewAvailable}
-                            placeholder="当前知识库的固定概览"
+                            placeholder="当前资料库的概览"
                             className="border-input bg-background/80 focus:border-foreground min-h-[180px] resize-y rounded-xl border p-3 text-xs leading-relaxed outline-none disabled:opacity-60"
                           />
                         </label>
@@ -1399,12 +1396,12 @@ export function LiveRagSettingsPanel({ open, onOpenChange }: LiveRagSettingsPane
                 )}
 
                 {activeTab === 'agent' && (
-                  <SettingsSection title="Agent 设定">
+                  <SettingsSection title="助手设定">
                     <div className="grid gap-3 py-3">
                       <label className="grid gap-2">
                         <span className="text-sm font-semibold">SOUL.md</span>
                         <span className="text-muted-foreground text-[11px]">
-                          后端只暴露 Agent 人设文件；系统提示词模板由后端内部维护。
+                          此处用于高级助手行为配置；系统安全规则由服务端维护。
                         </span>
                         <textarea
                           value={soulPrompt}
