@@ -1,277 +1,176 @@
 # MedAgent
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+[![Next.js 15](https://img.shields.io/badge/Next.js-15-black)](https://nextjs.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.137+-009688)](https://fastapi.tiangolo.com/)
 
-**MedAgent** 是一个面向医疗场景的 Agent 系统，基于 ReAct 推理 + 多引擎 RAG + 分层记忆构建。系统以 **ReAct 循环** 为核心——所有查询统一进入 ReAct 推理循环，LLM 自主决定何时调用工具、何时直接回答，RAG 检索作为 `retrieve_knowledge` 工具在循环内调用。
+MedAgent 是一个面向医疗咨询与个人健康知识管理的多模态 Agent 平台。当前仓库把网页端、实时语音 Agent、医学能力服务、个人知识库和统一数据治理整合在同一套系统中：用户可以通过文字或语音交互，Agent 按需检索医学知识与个人资料、调用医疗工具，并在回答前后执行安全检查与证据追踪。
 
-> **数据集来源**：[Open-KG](http://data.openkg.cn/dataset/disease-information) · [cMedQA2](https://github.com/zhangsheng93/cMedQA2)  
-> **参考项目**：[RAGQnASystem](https://github.com/honeyandme/RAGQnASystem) · [mem0](https://github.com/mem0ai/mem0)
+> 本项目用于辅助信息检索与健康沟通，不替代医生诊断、处方或紧急医疗服务。
 
----
+## 系统全景
 
-## 架构概览
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                    FastAPI 路由层                                 │
-│  /auth  /chat/stream  /sessions  /documents  /health            │
-├──────────────────────────────────────────────────────────────────┤
-│             MedicalChatService (统一 ReAct 编排)                  │
-│  ┌──────────┐  ┌─────────────────┐  ┌────────────┐  ┌────────┐ │
-│  │ Tool 匹配 │  │ QueryRouter     │  │ 记忆系统    │  │Safety  │ │
-│  │ (快速路径)│  │ (仅元数据/不选   │  │ STM/LTM/   │  │Guard   │ │
-│  │          │  │  执行模式)       │  │ 偏好/Graph │  │(分级)  │ │
-│  └────┬─────┘  └────────┬────────┘  └────────────┘  └────────┘ │
-│       │                 │                                        │
-│       └──────┬──────────┘                                        │
-│              ▼                                                    │
-│    ┌─────────────────────┐                                       │
-│    │ HarnessOrchestrator │                                       │
-│    │  Phase 1: RISK_DETECT (强制)                                │
-│    │  Phase 2: ROUTE (仅元数据)                                   │
-│    │  Phase 3: REACT_LOOP ──────────────────────┐                │
-│    │  │ ┌──────────────────────────────────────┐ │                │
-│    │  │ │ ReActEngine                          │ │                │
-│    │  │ │ Thought → Action → Observation 循环   │ │                │
-│    │  │ │ 工具集:                              │ │                │
-│    │  │ │   retrieve_knowledge (RAG 流水线)    │ │                │
-│    │  │ │   dosage_calculator                  │ │                │
-│    │  │ │   department_guide                   │ │                │
-│    │  │ │   normal_range                       │ │                │
-│    │  │ └──────────────────────────────────────┘ │                │
-│    │  Phase 4: SAFETY_CHECK (强制)               │                │
-│    │  Phase 5: COMPLETE                          │                │
-│    └─────────────────────┘                                       │
-├──────────────────────────────────────────────────────────────────┤
-│  RAG 流水线（retrieve_knowledge 工具内部）                       │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │ HybridRetriever (KG/QA/ES/Case)                          │   │
-│  │ → RRF Dense+Sparse 融合 → Cross-Encoder 精排             │   │
-│  │ → ContextAssembler (Schema-Driven 优先级+Token预算)       │   │
-│  │ → LLM 生成                                                │   │
-│  └──────────────────────────────────────────────────────────┘   │
-├──────────────────────────────────────────────────────────────────┤
-│                    生成层 (多 LLM 提供商)                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
-│  │ DeepSeek  │  │ ZhipuAI  │  │ Qwen     │  │ Ollama   │      │
-│  │(API 官方) │  │ (智谱)   │  │ (通义)   │  │ (本地)   │      │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘      │
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    U[Web / Android 用户] --> F[Next.js 统一前端]
+    F --> M[MedAgent API<br/>身份、会话、记忆与医学能力]
+    F --> A[MedLive API<br/>语音会话与知识库管理]
+    F <--> L[LiveKit<br/>实时音视频传输]
+    L <--> W[MedLive Worker<br/>STT · Agent · TTS]
+    W --> M
+    W --> R[LightRAG Core<br/>个人知识库]
+    A --> M
+    A --> R
+    M --> P[(PostgreSQL<br/>身份、会话、记忆、审计)]
+    M --> K[(Neo4j · Milvus · Elasticsearch<br/>医学知识检索)]
+    R --> D[(个人文档与派生索引)]
 ```
 
----
+| 子系统 | 主要职责 | 入口 |
+| --- | --- | --- |
+| `frontend` | 登录、文字/语音交互、知识库与证据展示 | Next.js，默认 `http://localhost:3000` |
+| `medlive` | LiveKit 实时语音 Worker、会话控制 API、个人 LightRAG 服务 | `medlive-agent`、`medlive-api`、`medlive-rag-service` |
+| `medrag` | 身份与租户隔离、文字对话、医学 RAG、工具、安全、记忆与审计 | `medrag.app.server:app`，默认 `http://localhost:8000` |
+| `medcontracts` | MedLive 与 MedAgent 之间共享的请求、证据和错误契约 | Python 包 |
 
-## 核心特性
+## 核心能力
 
-| 特性 | 说明 |
-|------|------|
-| **统一 ReAct 架构** | 所有查询进入 ReAct 循环，LLM 自主决策调工具或直接回答，Router 不再硬选执行模式 |
-| **ReAct 推理引擎** | Thought/Action/Observation 循环，最大 6 步，工具注册制，含超时保护与重试引导 |
-| **Harness 容错编排** | 5 阶段状态机（RiskDetect→Route→ReactLoop→SafetyCheck→Complete），每阶段独立异常捕获 |
-| **三引擎检索** | Neo4j KG（结构化）+ Milvus ANN（语义）+ ES BM25（关键词）并行检索 |
-| **RRF 融合** | Dense + Sparse 倒数排名融合，跨源分数叠加 |
-| **Cross-Encoder 精排** | RRF 结果二次排序，提升 top-k 准确率 |
-| **Schema-Driven 上下文** | 优先级插槽 + 全局 Token 预算裁剪 |
-| **分层记忆系统** | STM + LTM + Preference + GraphMemory，含自动 consolidation |
-| **PostgreSQL 持久化** | 会话 / LTM 记忆 / 用户偏好统一存储，多租户隔离 |
-| **LLM 偏好提取** | DeepSeek 异步提取用户偏好，规则提取作为同步回退 |
-| **内置工具包** | 剂量计算、科室导诊、检查指标正常值查询，作为 ReAct 工具注册 |
-| **分级安全防护** | 红色急诊警告 + 黄色就医提醒 + 检索质量免责声明，risk_detect/safety_check 强制阶段 |
-| **多 LLM 提供商** | DeepSeek / ZhipuAI / Qwen / Ollama，运行时动态切换 |
-| **SSE 流式响应** | ThreadPoolExecutor + asyncio.Queue 异步事件流 |
-| **优雅降级** | 每个外部组件独立 try/except，不级联故障 |
-| **健康追踪** | 全局组件注册表，统一 `/health` 端点 |
+- **文字与实时语音统一体验**：Next.js 前端同时接入 MedAgent HTTP API 和基于 LiveKit 的双向语音链路。
+- **Agent 工具调用**：检索医学知识和个人知识库，并调用剂量计算、科室导诊和检查指标查询工具。
+- **双知识域检索**：公共医学知识由 Neo4j、Milvus、Elasticsearch 混合检索提供；用户私有文档由独立的多知识库 LightRAG 服务管理。
+- **安全与可追溯回答**：输入与输出均经过医疗安全检查，检索结果携带证据、来源、置信度和请求链路信息。
+- **受控记忆**：短期上下文、会话摘要、长期事实和用户偏好写入统一数据层，医学事实支持确认、拒绝、更正、导出与删除。
+- **身份和租户隔离**：浏览器用户、语音会话和 Worker 通过 JWT、短时 Worker token、scope、nonce 与幂等键绑定。
+- **可降级运行**：外部检索源、模型或工具故障被隔离，健康状态、超时和错误信封保持一致。
 
----
+## 一次语音问答如何流转
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Web as Next.js
+    participant API as MedLive API
+    participant Voice as LiveKit / Worker
+    participant Core as MedAgent
+    participant RAG as 医学与个人 RAG
+    User->>Web: 登录并创建语音会话
+    Web->>API: 创建会话、获取 LiveKit token
+    API->>Core: 校验用户并绑定会话
+    User->>Voice: 语音输入
+    Voice->>Core: 输入安全检查与受控记忆读取
+    Voice->>RAG: 按 Agent 决策检索知识或调用工具
+    RAG-->>Voice: 返回证据与结构化结果
+    Voice->>Core: 输出安全检查、记录轮次与证据
+    Voice-->>User: 合规文本与语音回答
+```
+
+医学知识和个人资料属于两个不同的信任域。`medlive-worker` 负责实时对话和工具决策，但身份、受控记忆、医学安全与审计仍由 `medrag` 掌握；个人知识库通过 `medlive-api` 校验所有权后再访问内部 LightRAG 服务。
 
 ## 技术栈
 
-| 分类 | 技术 |
-|------|------|
-| 框架 | FastAPI + Uvicorn |
-| 数据库 | PostgreSQL + psycopg2 连接池 |
-| 向量库 | Milvus / Zilliz Cloud |
-| 关键词检索 | Elasticsearch (BM25) |
-| 知识图谱 | Neo4j + py2neo |
-| Embedding | BAAI/bge-small-zh-v1.5 (SentenceTransformers) |
-| NER | RoBERTa + BiLSTM |
-| 重排序 | Cross-Encoder |
-| LLM | DeepSeek / ZhipuAI / Qwen / Ollama |
-| 数据集 | DiseaseKG (Open-KG), cMedQA2 |
+| 层次 | 技术 |
+| --- | --- |
+| 前端 | Next.js 15、React 19、TypeScript、Tailwind CSS、LiveKit Components |
+| API 与 Agent | Python 3.10+、FastAPI、LiveKit Agents、OpenAI-compatible LLM clients |
+| 语音 | LiveKit、火山引擎 STT、StepFun / DashScope TTS（按配置启用） |
+| 个人知识库 | LightRAG，多知识库物理隔离，文档与索引任务管理 |
+| 医学检索 | Neo4j KG、Milvus ANN、Elasticsearch BM25、RRF 与 Cross-Encoder |
+| 数据与部署 | PostgreSQL、独立持久卷、Docker Compose |
 
----
+## 快速启动
 
-## 快速开始
+需要 Docker Engine、Docker Compose v2，以及实际使用的模型与语音 Provider 凭据。
 
-### 环境要求
-
-- Python >= 3.10
-- PostgreSQL（必需，会话和记忆持久化）
-- Neo4j (可选，KG 检索需要)
-- Milvus / Zilliz Cloud (可选，向量检索需要)
-- Elasticsearch (可选，BM25 检索需要)
-
-### 安装
-
-```bash
-git clone https://github.com/hugswangyu/MedAgent.git
-cd MedAgent
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+```powershell
+Copy-Item deploy/.env.phase5.example deploy/.env.phase5
+Get-ChildItem deploy/secrets/*.example | ForEach-Object {
+    Copy-Item $_.FullName ($_.FullName -replace '\.example$', '')
+}
 ```
 
-### 配置
+编辑 `deploy/.env.phase5` 和 `deploy/secrets/` 下新生成的文件。配置门禁会拒绝默认占位密钥；生产环境应把 `*_SECRET_FILE` 指向仓库外的 secret store。
 
-复制 `.env.example` 为 `.env`，按需配置：
+日常开发推荐 `voice`，它会启动 PostgreSQL、迁移任务、MedAgent API、LightRAG、MedLive API/Worker、LiveKit 和前端：
 
-```ini
-# LLM 提供商（至少配置一个）
-DEEPSEEK_API_KEY=sk-your-key
-ZHIPUAI_API_KEY=your-key
-QWEN_API_KEY=your-key
-
-# PostgreSQL（必需，替代 JSON 文件持久化）
-PG_HOST=localhost
-PG_PORT=5432
-PG_USER=ragqa
-PG_PASSWORD=ragqa123
-PG_DATABASE=ragqa_memory
-
-# 外部服务 URI（可选）
-NEO4J_URI=http://localhost:7474
-MILVUS_HOST=localhost
-ES_HOSTS=http://localhost:9200
+```powershell
+docker compose --env-file deploy/.env.phase5 --profile voice config --quiet
+docker compose --env-file deploy/.env.phase5 --profile voice up -d --build
 ```
 
-### 初始化数据库
+需要本地运行 Milvus、Elasticsearch 和 Neo4j 时使用完整配置：
 
-```bash
-# 创建数据库
-createdb ragqa_memory
-
-# 建表
-psql -d ragqa_memory -f scripts/create_tables.sql
+```powershell
+docker compose --env-file deploy/.env.phase5 --profile full config --quiet
+docker compose --env-file deploy/.env.phase5 --profile full up -d --build
 ```
 
-### 启动
+| 地址 | 用途 |
+| --- | --- |
+| `http://localhost:3000` | 统一 Web 前端 |
+| `http://localhost:8000/docs` | MedAgent OpenAPI |
+| `http://localhost:8000/health` | MedAgent 健康状态 |
+| `http://localhost:9821/docs` | MedLive 管理 API |
+| `http://localhost:9821/health` | MedLive 健康状态 |
 
-```bash
-uvicorn medrag.app.server:app --host 0.0.0.0 --port 8000 --reload
+Compose 默认只把用户入口绑定到 `127.0.0.1`，PostgreSQL 和内部 LightRAG 不发布宿主端口。公网或跨主机部署需要补齐 TLS、反向代理、防火墙、TURN、集中日志与异地备份。
+
+## 本地开发
+
+```powershell
+uv sync --all-extras
+uv run uvicorn medrag.app.server:app --host 127.0.0.1 --port 8000 --reload
+uv run medlive-rag-service
+uv run medlive-api
+uv run medlive-agent dev
 ```
 
----
-
-## 项目结构
-
-```
-src/medrag/
-├── app/              # FastAPI 路由层
-│   ├── api/          #   auth / chat / sessions / documents
-│   ├── server.py     #   应用入口
-│   ├── schemas.py    #   Pydantic 模型
-│   └── ...
-├── service/          # MedicalChatService 编排核心
-├── retrieval/        # 检索层
-│   ├── hybrid_retriever.py  # 多源检索 + RRF 融合
-│   ├── router.py            # 路由 (仅元数据，不选执行模式)
-│   ├── kg_retriever.py      # Neo4j KG 检索
-│   ├── es_retriever.py      # ES BM25 检索
-│   └── reranker.py          # Cross-Encoder 重排序
-├── vectors/          # 向量检索
-│   ├── qa_retriever.py      # Milvus ANN 检索
-│   ├── embedding.py         # BGE Embedding 模型
-│   └── milvus_client.py     # Milvus 客户端封装
-├── memory/           # 分层记忆系统
-│   ├── short_term.py       # STM 滑动窗口
-│   ├── long_term.py        # LTM 语义召回 + 持久化
-│   ├── graph_memory.py     # 图感知记忆
-│   ├── preference.py       # 用户偏好提取
-│   └── schema.py           # ContextAssembler
-├── react/            # ReAct 多步推理引擎
-│   ├── engine.py           #   Thought/Action/Observation 循环
-│   ├── rag_tool.py         #   RetrieveKnowledgeTool（RAG 包装为 ReAct 工具）
-│   └── tools.py            #   ReActTool 定义 + BaseTool 适配器
-├── harness/          # Harness 容错编排引擎
-│   ├── orchestrator.py     #   HarnessOrchestrator 5 阶段状态机
-│   ├── types.py            #   MedPhase/MedToolResult/MedStateMachine
-│   └── wrappers.py         #   MedToolWrapper 超时+重试+降级
-├── rag/              # RAG 流水线
-│   ├── prompt_builder.py   # 提示词构建 (双层设计)
-│   ├── answer_generator.py # 流式 / 同步生成
-│   └── safety_guard.py     # 红/黄分级安全防护
-├── tools/            # 内置工具包
-│   ├── dosage_calculator.py
-│   ├── department_guide.py
-│   └── normal_range.py
-├── llm/              # LLM 客户端工厂
-├── infrastructure/   # 基础服务
-│   └── storage/           # 存储后端
-│       └── postgres_client.py  # PostgreSQL 持久化（LTM/会话/偏好）
-├── ner/              # 命名实体识别
-├── config/           # 集中化配置
-└── scripts/          # 数据库脚本
-    └── create_tables.sql    # 建表（LTM/会话/偏好）
+```powershell
+Set-Location frontend
+Copy-Item .env.example .env.local
+pnpm install
+pnpm dev
 ```
 
----
+`frontend/.env.local` 中的 `MEDAGENT_API_BASE` 和 `MEDLIVE_API_BASE` 必须指向本地后端。完整配置项见 `.env.example`、`frontend/.env.example` 与 `deploy/.env.phase5.example`。
 
-## 数据流（ReAct 架构）
+## 仓库结构
 
-```
-用户输入 → 鉴权 → POST /chat/stream (SSE)
-  │
-  ├─ ToolRegistry.match() → 工具命中? 直接返回（快速路径）
-  │
-  ├─ HarnessOrchestrator.run()
-  │     │
-  │     ├─ Phase 1: SafetyGuard.detect_risk()
-  │     │     └─ 红/黄风险标记（紧急阻断由上层决定）
-  │     │
-  │     ├─ Phase 2: QueryRouter.route()
-  │     │     └─ 仅返回元数据（query_type/数据源/是否需病例上下文）
-  │     │        不选择执行模式
-  │     │
-  │     ├─ Phase 3: ReActEngine.run()
-  │     │     │  ReAct 循环（Thought → Action → Observation）
-  │     │     │
-  │     │     ├─ LLM 自主决策: 调工具 or 直接回答
-  │     │     │
-  │     │     ├─ retrieve_knowledge (RAG):
-  │     │     │     HybridRetriever (KG + QA + ES)
-  │     │     │     → RRF 融合 → Cross-Encoder 精排
-  │     │     │     → 格式化文本返回 ReAct 循环作为 Observation
-  │     │     │
-  │     │     ├─ dosage_calculator: 药物剂量计算
-  │     │     ├─ department_guide: 科室导诊
-  │     │     └─ normal_range: 检查指标正常值查询
-  │     │
-  │     ├─ Phase 4: SafetyGuard.append_safety_notice()
-  │     │     └─ 分级免责声明 + 紧急提示
-  │     │
-  │     └─ Phase 5: 返回结果
-  │
-  └─ MemorySystem 记录（用户消息 + 助手回复）
+```text
+MedAgent/
+├── src/
+│   ├── medrag/          # 医学能力、身份、会话、记忆、安全与公共知识检索
+│   ├── medlive/         # 实时语音 Agent、管理 API 与个人 LightRAG 服务
+│   └── medcontracts/    # 跨服务共享契约
+├── frontend/            # Next.js 统一前端
+├── deploy/              # 镜像、编排、迁移、检查、备份与恢复
+├── scripts/             # 数据库 schema 与医学知识索引脚本
+├── tests/               # 单元、集成、安全、迁移和部署验收测试
+├── eval/                # RAGAS 评测、golden cases 与报告
+├── data/                # 医学数据处理与训练样本
+├── compose.yaml         # voice / full 一体化编排
+└── pyproject.toml       # Python 包、入口命令与可选依赖
 ```
 
----
+建议按 `compose.yaml` → `src/medlive/main.py` → `src/medlive/api/server.py` → `src/medrag/app/server.py` → `src/medcontracts/phase0.py` 阅读主干。共享契约文件名为兼容历史保留，不代表系统仍按阶段拆分运行。
 
-## API
+## API 边界
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/auth/login` | POST | 用户登录 |
-| `/auth/register` | POST | 用户注册 |
-| `/chat/stream` | POST | SSE 流式聊天 |
-| `/chat/models` | GET | 可用 LLM 模型列表 |
-| `/sessions` | GET/POST/DELETE | 会话管理 |
-| `/documents` | GET/POST/DELETE | 文档管理 |
-| `/health` | GET | 组件健康状态 |
+- **MedAgent 用户面**：`/auth`、`/chat`、`/sessions`、`/documents`、`/memories`。
+- **MedAgent 控制面**：`/control/v1`，负责知识库所有权、语音会话和 Worker token。
+- **MedAgent 内部能力**：`/internal/v1`，提供安全检查、医学检索、医疗工具、语音轮次审计与受控记忆读取。
+- **MedLive 管理面**：`/voice`、`/model`、`/prompt`、`/session`、`/rag`。
+- **LightRAG 内部面**：`/v1/knowledge-bases/...`，仅供携带内部 API key 的服务访问。
 
----
+## 测试与运维
 
-## 许可证
+```powershell
+uv run pytest
+Set-Location frontend
+pnpm build
+```
 
-[MIT License](LICENSE)
+部署前还应执行迁移 dry-run、服务预热、HTTP smoke、租户隔离测试以及备份/恢复演练。详细命令与生产约束见 [部署与运维手册](docs/operations/phase5-deployment.md)。历史设计与交接材料位于 `docs/plans/` 和 `docs/handoffs/`；当前事实以代码、`compose.yaml` 和本 README 为准。
+
+## 数据来源与许可
+
+医学检索实验数据包含 [Open-KG 疾病知识图谱](http://data.openkg.cn/dataset/disease-information) 与 [cMedQA2](https://github.com/zhangsheng93/cMedQA2)。迁入的 LiveRAG 与前端代码保留 MIT 许可；具体适用范围和完整文本见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 `licenses/`。
