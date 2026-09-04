@@ -1,0 +1,39 @@
+FROM python:3.12-slim-bookworm AS runtime-base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=300 \
+    PIP_RETRIES=10
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY deploy/docker/secret-entrypoint.sh /usr/local/bin/secret-entrypoint.sh
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/secret-entrypoint.sh"]
+
+FROM runtime-base AS ops-runtime
+COPY scripts ./scripts
+COPY deploy/ops ./deploy/ops
+RUN pip install "psycopg2-binary>=2.9"
+CMD ["python", "/app/deploy/ops/validate_config.py"]
+
+FROM runtime-base AS app-source
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY scripts ./scripts
+COPY deploy/ops ./deploy/ops
+COPY data ./data
+COPY model ./model
+
+FROM app-source AS medical-runtime
+RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0+cpu" \
+    && pip install ".[medical]"
+CMD ["uvicorn", "medrag.app.server:app", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM app-source AS live-runtime
+RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0+cpu" \
+    && pip install ".[live]"
+CMD ["medlive-api"]

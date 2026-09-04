@@ -10,6 +10,11 @@ __pycache__/
 
 # Environment / secrets
 .env
+deploy/.env.phase5
+deploy/secrets/*
+!deploy/secrets/*.example
+!deploy/secrets/README.md
+backups/
 
 # macOS/editor local files
 .DS_Store

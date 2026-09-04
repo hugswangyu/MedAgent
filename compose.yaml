@@ -1,0 +1,371 @@
+name: ${COMPOSE_PROJECT_NAME:-medagent}
+
+x-core-profiles: &core-profiles [voice, full]
+x-ops-build: &ops-build
+  context: .
+  dockerfile: deploy/Dockerfile.python
+  target: ops-runtime
+x-medical-build: &medical-build
+  context: .
+  dockerfile: deploy/Dockerfile.python
+  target: medical-runtime
+x-live-build: &live-build
+  context: .
+  dockerfile: deploy/Dockerfile.python
+  target: live-runtime
+x-app-env: &app-env
+  MEDRAG_ENV: ${MEDRAG_ENV:-dev}
+  PG_HOST: postgres
+  PG_PORT: "5432"
+  PG_USER: ${POSTGRES_USER:-medagent}
+  PG_DATABASE: ${POSTGRES_DB:-medagent}
+  MEDAGENT_INTERNAL_BASE_URL: http://medagent-api:8000
+  MEDAGENT_CONTROL_BASE_URL: http://medagent-api:8000
+  LIGHTRAG_BASE_URL: http://lightrag:9721
+  KB_SERVICE_HOST: 0.0.0.0
+  KB_SERVICE_PORT: "9721"
+  LIVERAG_USER_DATA_DIR: /data/medlive
+  LIGHTRAG_WORKING_DIR: /data/medlive/rag
+  LIGHTRAG_KNOWLEDGE_BASES_DIR: /data/medlive/knowledge-bases
+  LIGHTRAG_UPLOAD_DIR: /data/medlive/uploads
+  LIVEKIT_URL: ws://livekit:7880
+  LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
+  MILVUS_HOST: milvus
+  MILVUS_PORT: "19530"
+  NEO4J_URI: http://neo4j:7474
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD:-phase5-local-neo4j-only}
+x-app-secrets: &app-secrets
+  - jwt_secret
+  - postgres_password
+  - internal_api_key
+  - control_plane_key
+  - livekit_api_key
+  - livekit_api_secret
+  - lightrag_api_key
+  - elasticsearch_password
+
+services:
+  config-guard:
+    build: *ops-build
+    profiles: *core-profiles
+    restart: "no"
+    command: [python, /app/deploy/ops/validate_config.py]
+    environment:
+      MEDRAG_ENV: ${MEDRAG_ENV:-dev}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-phase5-local-neo4j-only}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-phase5-local-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-phase5-local-minio-password}
+    secrets: *app-secrets
+
+  postgres:
+    image: postgres:16.6-alpine
+    profiles: *core-profiles
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-medagent}
+      POSTGRES_DB: ${POSTGRES_DB:-medagent}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U ${POSTGRES_USER:-medagent} -d ${POSTGRES_DB:-medagent}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    depends_on:
+      config-guard:
+        condition: service_completed_successfully
+
+  migrate:
+    build: *ops-build
+    profiles: *core-profiles
+    restart: "no"
+    command: [python, /app/deploy/ops/migrate.py, apply]
+    environment: *app-env
+    secrets: *app-secrets
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  medagent-api:
+    build: *medical-build
+    profiles: *core-profiles
+    restart: unless-stopped
+    command: [uvicorn, medrag.app.server:app, --host, 0.0.0.0, --port, "8000"]
+    environment:
+      <<: *app-env
+      ALLOW_PUBLIC_REGISTRATION: ${ALLOW_PUBLIC_REGISTRATION:-false}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      ZHIPUAI_API_KEY: ${ZHIPUAI_API_KEY:-}
+    secrets: *app-secrets
+    ports:
+      - "127.0.0.1:${MEDAGENT_PORT:-8000}:8000"
+    volumes:
+      - medagent-data:/data/medagent
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8000/health]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  lightrag:
+    build: *live-build
+    profiles: *core-profiles
+    restart: unless-stopped
+    command: [medlive-rag-service]
+    environment:
+      <<: *app-env
+      LIGHTRAG_LLM_API_KEY: ${DASHSCOPE_API_KEY:-}
+      LIGHTRAG_EMBEDDING_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+    secrets: *app-secrets
+    volumes:
+      - medlive-data:/data/medlive
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:9721/v1/healthz]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    depends_on:
+      config-guard:
+        condition: service_completed_successfully
+
+  medlive-api:
+    build: *live-build
+    profiles: *core-profiles
+    restart: unless-stopped
+    command: [medlive-api]
+    environment:
+      <<: *app-env
+      LIVERAG_API_HOST: 0.0.0.0
+      LIVERAG_API_PORT: "9821"
+    secrets: *app-secrets
+    ports:
+      - "127.0.0.1:${MEDLIVE_API_PORT:-9821}:9821"
+    volumes:
+      - medlive-data:/data/medlive
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:9821/health]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      medagent-api:
+        condition: service_healthy
+      lightrag:
+        condition: service_healthy
+
+  livekit:
+    image: livekit/livekit-server:v1.8.4
+    profiles: *core-profiles
+    restart: unless-stopped
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - >-
+        export LIVEKIT_KEYS="$$(cat /run/secrets/livekit_api_key): $$(cat /run/secrets/livekit_api_secret)";
+        exec /livekit-server --config /etc/livekit.yaml
+    secrets: [livekit_api_key, livekit_api_secret]
+    ports:
+      - "127.0.0.1:${LIVEKIT_HTTP_PORT:-7880}:7880"
+      - "127.0.0.1:${LIVEKIT_TCP_PORT:-7881}:7881"
+      - "127.0.0.1:50000-50100:50000-50100/udp"
+    volumes:
+      - ./deploy/livekit.yaml:/etc/livekit.yaml:ro
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O /dev/null http://localhost:7880 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    depends_on:
+      config-guard:
+        condition: service_completed_successfully
+
+  medlive-worker:
+    build: *live-build
+    profiles: *core-profiles
+    restart: unless-stopped
+    command: [medlive-agent, start]
+    environment:
+      <<: *app-env
+      VOICE_LLM_API_KEY: ${VOICE_LLM_API_KEY:-}
+      VOICE_TTS_API_KEY: ${VOICE_TTS_API_KEY:-}
+      VOLCENGINE_STT_APP_ID: ${VOLCENGINE_STT_APP_ID:-}
+      VOLCENGINE_STT_ACCESS_TOKEN: ${VOLCENGINE_STT_ACCESS_TOKEN:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+    secrets: *app-secrets
+    volumes:
+      - medlive-data:/data/medlive
+    healthcheck:
+      test: [CMD, python, -c, "import os; os.kill(1, 0)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      livekit:
+        condition: service_healthy
+      medlive-api:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.frontend
+    profiles: *core-profiles
+    restart: unless-stopped
+    environment:
+      MEDAGENT_API_BASE: http://medagent-api:8000
+      MEDLIVE_API_BASE: http://medlive-api:9821
+    ports:
+      - "127.0.0.1:${NEXTJS_PORT:-3000}:3000"
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      medagent-api:
+        condition: service_healthy
+      medlive-api:
+        condition: service_healthy
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    profiles: [full]
+    restart: unless-stopped
+    command: [etcd, --data-dir=/etcd, --advertise-client-urls=http://etcd:2379, --listen-client-urls=http://0.0.0.0:2379]
+    volumes: [milvus-etcd:/etcd]
+    healthcheck:
+      test: [CMD, etcdctl, endpoint, health]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      config-guard:
+        condition: service_completed_successfully
+
+  minio:
+    image: minio/minio:RELEASE.2025-02-07T23-21-09Z
+    profiles: [full]
+    restart: unless-stopped
+    command: [server, /data, --console-address, ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-phase5-local-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-phase5-local-minio-password}
+    volumes: [milvus-minio:/data]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      config-guard:
+        condition: service_completed_successfully
+
+  milvus:
+    image: milvusdb/milvus:v2.5.8
+    profiles: [full]
+    restart: unless-stopped
+    command: [milvus, run, standalone]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-phase5-local-minio}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-phase5-local-minio-password}
+    volumes: [milvus-data:/var/lib/milvus]
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:9091/healthz]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.16.0
+    profiles: [full]
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.enrollment.enabled: "false"
+      ingest.geoip.downloader.enabled: "false"
+      ELASTIC_PASSWORD_FILE: /run/secrets/elasticsearch_password
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms512m -Xmx512m}
+    secrets: [elasticsearch_password]
+    volumes: [elasticsearch-data:/usr/share/elasticsearch/data]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS -u elastic:$$(cat /run/secrets/elasticsearch_password) 'http://localhost:9200/_cluster/health?wait_for_status=yellow' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    depends_on:
+      config-guard:
+        condition: service_completed_successfully
+
+  neo4j:
+    image: neo4j:5.26-community
+    profiles: [full]
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-phase5-local-neo4j-only}
+      NEO4J_PASSWORD_VALUE: ${NEO4J_PASSWORD:-phase5-local-neo4j-only}
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: [CMD-SHELL, "cypher-shell -u neo4j -p \"$$NEO4J_PASSWORD_VALUE\" 'RETURN 1' >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 45s
+    depends_on:
+      config-guard:
+        condition: service_completed_successfully
+
+secrets:
+  jwt_secret:
+    file: ${JWT_SECRET_FILE:-./deploy/secrets/jwt_secret.example}
+  postgres_password:
+    file: ${POSTGRES_PASSWORD_SECRET_FILE:-./deploy/secrets/postgres_password.example}
+  internal_api_key:
+    file: ${INTERNAL_API_KEY_SECRET_FILE:-./deploy/secrets/internal_api_key.example}
+  control_plane_key:
+    file: ${CONTROL_PLANE_KEY_SECRET_FILE:-./deploy/secrets/control_plane_key.example}
+  livekit_api_key:
+    file: ${LIVEKIT_API_KEY_SECRET_FILE:-./deploy/secrets/livekit_api_key.example}
+  livekit_api_secret:
+    file: ${LIVEKIT_API_SECRET_FILE:-./deploy/secrets/livekit_api_secret.example}
+  lightrag_api_key:
+    file: ${LIGHTRAG_API_KEY_SECRET_FILE:-./deploy/secrets/lightrag_api_key.example}
+  elasticsearch_password:
+    file: ${ELASTIC_PASSWORD_SECRET_FILE:-./deploy/secrets/elasticsearch_password.example}
+
+volumes:
+  postgres-data:
+  medagent-data:
+  medlive-data:
+  milvus-etcd:
+  milvus-minio:
+  milvus-data:
+  elasticsearch-data:
+  neo4j-data:
+  neo4j-logs:
