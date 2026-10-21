@@ -19,6 +19,7 @@ from medrag.harness.types import (
     HarnessConfig,
     MedStateMachine,
 )
+from medrag.harness.dag import DAGExecutor, DAGNode, DAGNodeResult
 
 logger = logging.getLogger(__name__)
 
@@ -81,48 +82,44 @@ class HarnessOrchestrator:
             "harness_warning": None,
         }
 
-        # ── Phase 1: 安全检测 ──
-        try:
+        dag_context = {"query": query, "result": result, **context}
+
+        def risk_detect(ctx: Dict[str, Any]) -> Dict[str, Any]:
             self.state.transition(MedPhase.RISK_DETECT)
             self._emit("phase_change", {"phase": "risk_detect"})
-
-            if self.risk_detector:
-                risk_info = self.risk_detector(query)
+            try:
+                risk_info = self.risk_detector(query) if self.risk_detector else {
+                    "has_risk": False, "level": "none",
+                }
                 self.state.record_risk(
                     risk_info.get("level", "none"),
                     risk_info.get("risk_keywords", []),
                 )
                 result["risk_info"] = risk_info
-            else:
-                risk_info = {"has_risk": False, "level": "none"}
-                result["risk_info"] = risk_info
-        except Exception as exc:
-            logger.warning("Risk detection failed: %s", exc)
-            risk_info = {"has_risk": False, "level": "none"}
-            result["risk_info"] = risk_info
-            result["harness_warning"] = "安全检测暂时不可用。"
+            except Exception as exc:
+                logger.warning("Risk detection failed: %s", exc)
+                result["risk_info"] = {"has_risk": False, "level": "none"}
+                result["harness_warning"] = "安全检测暂时不可用。"
+            return result["risk_info"]
 
-        # ── Phase 2: 路由（仅元数据，不选执行模式） ──
-        try:
+        def route(ctx: Dict[str, Any]) -> Dict[str, Any]:
             self.state.transition(MedPhase.ROUTE)
             self._emit("phase_change", {"phase": "route"})
-
-            if self.router:
-                route = self.router(query)
-                result["route"] = route
-            else:
+            try:
+                result["route"] = self.router(query) if self.router else {}
+            except Exception as exc:
+                logger.warning("Route failed: %s", exc)
                 result["route"] = {}
-        except Exception as exc:
-            logger.warning("Route failed: %s", exc)
-            result["route"] = {}
-            existing = result.get("harness_warning") or ""
-            result["harness_warning"] = existing + "路由降级。"
+                result["harness_warning"] = (result.get("harness_warning") or "") + "路由降级。"
+            return result["route"]
 
-        # ── Phase 3: ReAct 循环 ──
-        self.state.transition(MedPhase.REACT_LOOP)
-        self._emit("phase_change", {"phase": "react_loop"})
+        def react_loop(ctx: Dict[str, Any]) -> DAGNodeResult:
+            self.state.transition(MedPhase.REACT_LOOP)
+            self._emit("phase_change", {"phase": "react_loop"})
+            if not self.react_engine_builder:
+                result["answer"] = "系统尚未配置推理引擎。"
+                return DAGNodeResult(data=result["answer"])
 
-        if self.react_engine_builder:
             try:
                 engine = self.react_engine_builder(query, result.get("route", {}))
                 engine_result = engine.run(
@@ -134,50 +131,92 @@ class HarnessOrchestrator:
                     "steps": engine_result.get("steps", []),
                     "tool_results": engine_result.get("tool_results", {}),
                 }
+                question = engine_result.get("clarifying_question")
+                if question or engine_result.get("status") in {
+                    "needs_clarification", "clarification_required",
+                }:
+                    question = question or "为了更准确回答，请补充相关症状、持续时间或检查结果。"
+                    result["status"] = "needs_clarification"
+                    result["clarifying_question"] = question
+                    ctx["clarifying_question"] = question
+                    ctx["needs_clarification"] = True
+                    return DAGNodeResult(
+                        data=question,
+                        dynamic_nodes=[DAGNode(
+                            name="clarify_question",
+                            handler=lambda inner: inner["clarifying_question"],
+                            pause_on_success=True,
+                        )],
+                    )
             except Exception as exc:
                 logger.error("ReAct loop failed: %s", exc)
                 result["status"] = "failed"
                 result["answer"] = "抱歉，AI 暂时无法回答，请稍后重试。"
-                existing = result.get("harness_warning") or ""
-                result["harness_warning"] = existing + "推理异常。"
-        else:
-            result["answer"] = "系统尚未配置推理引擎。"
+                result["harness_warning"] = (result.get("harness_warning") or "") + "推理异常。"
+            return DAGNodeResult(data=result.get("answer", ""))
 
-        # ── Phase 4: 安全检测（输出） ──
-        if self.safety_checker and result.get("answer"):
+        def safety_check(ctx: Dict[str, Any]) -> str:
+            self.state.transition(MedPhase.SAFETY_CHECK)
+            self._emit("phase_change", {"phase": "safety_check"})
+            if not result.get("answer"):
+                self.state.record_safety_checked()
+                return ""
             try:
-                self.state.transition(MedPhase.SAFETY_CHECK)
-                self._emit("phase_change", {"phase": "safety_check"})
-
-                retrieval_quality = (
-                    "high" if result.get("react_trace", {}).get("steps") else "none"
-                )
-                answer = self.safety_checker(
-                    query=query,
-                    answer=result["answer"],
-                    retrieval_quality=retrieval_quality,
-                    query_type=result.get("route", {}).get("query_type", ""),
-                )
-                result["answer"] = answer
+                if self.safety_checker:
+                    retrieval_quality = (
+                        "high" if result.get("react_trace", {}).get("steps") else "none"
+                    )
+                    result["answer"] = self.safety_checker(
+                        query=query,
+                        answer=result["answer"],
+                        retrieval_quality=retrieval_quality,
+                        query_type=result.get("route", {}).get("query_type", ""),
+                    )
                 self.state.record_safety_checked()
             except Exception as exc:
                 logger.warning("Safety check failed: %s", exc)
-                existing = result.get("harness_warning") or ""
-                result["harness_warning"] = existing + "安全检测异常。"
+                result["harness_warning"] = (result.get("harness_warning") or "") + "安全检测异常。"
+            return result["answer"]
 
-        # ── Complete ──
-        try:
-            self.state.transition(MedPhase.COMPLETE)
-        except ValueError:
-            self.state.force_transition(MedPhase.COMPLETE)
-        self._emit("complete", {"session_id": self.state.session_id})
+        def complete(ctx: Dict[str, Any]) -> str:
+            try:
+                self.state.transition(MedPhase.COMPLETE)
+            except ValueError:
+                self.state.force_transition(MedPhase.COMPLETE)
+            self._emit("complete", {"session_id": self.state.session_id})
+            return result.get("answer", "")
+
+        needs_clarification = lambda ctx, outputs: not ctx.get("needs_clarification", False)
+        dag = DAGExecutor(
+            [
+                DAGNode("risk_detect", risk_detect),
+                DAGNode("route", route, {"risk_detect"}),
+                DAGNode("react_loop", react_loop, {"route"}),
+                DAGNode(
+                    "safety_check", safety_check, {"react_loop"},
+                    condition=needs_clarification,
+                ),
+                DAGNode(
+                    "complete", complete, {"safety_check"},
+                    condition=needs_clarification,
+                ),
+            ],
+            max_workers=self.config.max_parallel,
+        )
+        execution = dag.run(dag_context)
+
+        if execution.waiting_for_user:
+            result["status"] = "needs_clarification"
+            result["answer"] = execution.question or result.get("clarifying_question", "")
+        elif execution.status == "failed" and result["status"] == "success":
+            result["status"] = "failed"
 
         result["trace"] = {
             "phases": self.state.history,
             "retries": self.state.retry_history,
             "total_duration_ms": self.state.metadata.get("total_duration_ms"),
+            "dag": execution.trace,
         }
-
         return result
 
     def _emit(self, event_type: str, data: dict) -> None:

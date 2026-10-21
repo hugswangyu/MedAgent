@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-**MedAgent** 是一个面向医疗场景的 Agent 系统，基于 ReAct 推理 + 多引擎 RAG + 分层记忆构建。系统以 **ReAct 循环** 为核心——所有查询统一进入 ReAct 推理循环，LLM 自主决定何时调用工具、何时直接回答，RAG 检索作为 `retrieve_knowledge` 工具在循环内调用。
+**MedAgent** 是一个面向医疗场景的 Agent 系统，基于 DAG 工作流 + ReAct 推理 + 多引擎 RAG + 分层记忆构建。Harness 负责医疗安全生命周期，DAG 负责节点依赖与并行调度，ReAct 负责在推理节点内选择工具；RAG 检索作为 `retrieve_knowledge` 工具在循环内调用。
 
 > **数据集来源**：[Open-KG](http://data.openkg.cn/dataset/disease-information) · [cMedQA2](https://github.com/zhangsheng93/cMedQA2)  
 > **参考项目**：[RAGQnASystem](https://github.com/honeyandme/RAGQnASystem) · [mem0](https://github.com/mem0ai/mem0)
@@ -69,7 +69,8 @@
 |------|------|
 | **统一 ReAct 架构** | 所有查询进入 ReAct 循环，LLM 自主决策调工具或直接回答，Router 不再硬选执行模式 |
 | **ReAct 推理引擎** | Thought/Action/Observation 循环，最大 6 步，工具注册制，含超时保护与重试引导 |
-| **Harness 容错编排** | 5 阶段状态机（RiskDetect→Route→ReactLoop→SafetyCheck→Complete），每阶段独立异常捕获 |
+| **DAG 工作流执行** | 依赖校验、拓扑调度、ready 节点并行执行、运行时插入节点，以及反问节点暂停等待用户 |
+| **Harness 容错编排** | DAG 驱动 5 阶段状态机（RiskDetect→Route→ReactLoop→SafetyCheck→Complete），每阶段独立异常捕获 |
 | **三引擎检索** | Neo4j KG（结构化）+ Milvus ANN（语义）+ ES BM25（关键词）并行检索 |
 | **RRF 融合** | Dense + Sparse 倒数排名融合，跨源分数叠加 |
 | **Cross-Encoder 精排** | RRF 结果二次排序，提升 top-k 准确率 |
@@ -195,6 +196,7 @@ src/medrag/
 │   ├── rag_tool.py         #   RetrieveKnowledgeTool（RAG 包装为 ReAct 工具）
 │   └── tools.py            #   ReActTool 定义 + BaseTool 适配器
 ├── harness/          # Harness 容错编排引擎
+│   ├── dag.py              #   DAG 节点依赖、拓扑调度、并行和暂停
 │   ├── orchestrator.py     #   HarnessOrchestrator 5 阶段状态机
 │   ├── types.py            #   MedPhase/MedToolResult/MedStateMachine
 │   └── wrappers.py         #   MedToolWrapper 超时+重试+降级

@@ -123,3 +123,34 @@ class TestHarnessOrchestrator:
         assert "start" in event_types
         assert "phase_change" in event_types
         assert "complete" in event_types
+
+    def test_dag_trace_is_recorded(self):
+        orchestrator = HarnessOrchestrator(
+            react_engine_builder=lambda q, r: MagicMock(
+                **{"run.return_value": {"answer": "回答", "steps": [], "tool_results": {}}}
+            ),
+            safety_checker=lambda query, answer, **kw: answer,
+        )
+
+        result = orchestrator.run(query="测试")
+        nodes = [item["node"] for item in result["trace"]["dag"]]
+        assert nodes == ["risk_detect", "route", "react_loop", "safety_check", "complete"]
+
+    def test_react_can_pause_for_dynamic_clarification(self):
+        orchestrator = HarnessOrchestrator(
+            react_engine_builder=lambda q, r: MagicMock(
+                **{"run.return_value": {
+                    "status": "needs_clarification",
+                    "clarifying_question": "请补充症状持续时间。",
+                    "answer": "",
+                    "steps": [],
+                    "tool_results": {},
+                }}
+            ),
+            safety_checker=lambda query, answer, **kw: answer,
+        )
+
+        result = orchestrator.run(query="腹痛怎么办")
+        assert result["status"] == "needs_clarification"
+        assert result["answer"] == "请补充症状持续时间。"
+        assert result["trace"]["dag"][-1]["node"] == "clarify_question"
