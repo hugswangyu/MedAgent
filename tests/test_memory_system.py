@@ -10,6 +10,13 @@ from medrag.memory.short_term import ConversationMessage
 from medrag.memory.types import ConsolidationConfig, MemoryItem, RecallFilter
 
 
+@pytest.fixture(autouse=True)
+def offline_extraction():
+    with patch("medrag.memory.extraction.extract_llm", return_value=[]):
+        yield
+
+
+
 # ============================================================================
 # 辅助方法
 # ============================================================================
@@ -56,7 +63,7 @@ class TestMemorySystemBasics:
         ms = MemorySystem()
         ms.store_assistant_reply("患者有高血压需要注意饮食")
         results = ms.recall("高血压")
-        assert any("高血压" in r.content for r in results)
+        assert not results  # assistant suggestions must not become user facts
 
     def test_build_context_with_all_layers(self):
         ms = MemorySystem(max_turns=5)
@@ -65,7 +72,7 @@ class TestMemorySystemBasics:
         ms.add_message("user", "最近总是头痛")
         ms.store_assistant_reply("建议多休息")
         ctx = ms.build_context("张三")
-        assert "【用户偏好】" in ctx
+        assert "【用户健康画像/用户偏好】" in ctx
         assert "张三" in ctx
         assert "【对话历史】" in ctx
 
@@ -280,7 +287,7 @@ class TestContextAssembler:
 
     def test_budget_pruning_drops_low_priority(self):
         from medrag.memory import ContextAssembler
-        a = ContextAssembler(budget=10)
+        a = ContextAssembler(budget=64)
         a.add("memory", "患者有高血压病史", priority=100)
         a.add("qa", "多喝水休息有助于康复" * 20, priority=70)
         result = a.assemble()

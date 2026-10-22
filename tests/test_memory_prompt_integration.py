@@ -3,6 +3,15 @@
 from __future__ import annotations
 
 import threading
+import pytest
+from unittest.mock import patch
+
+
+@pytest.fixture(autouse=True)
+def offline_extraction():
+    with patch("medrag.memory.extraction.extract_llm", return_value=[]):
+        yield
+
 from unittest.mock import MagicMock
 
 from medrag.harness.orchestrator import HarnessOrchestrator

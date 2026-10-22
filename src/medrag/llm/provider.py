@@ -43,3 +43,22 @@ def get_llm_provider(provider: str | None = None) -> LLMProvider:
         client=get_llm_client(name),
         default_model=model,
     )
+
+
+def is_llm_provider_configured(provider: str | None = None) -> bool:
+    """Return whether the selected provider has credentials configured.
+
+    Ollama is local and does not require an API key; connection errors are
+    handled by the callers' normal fallback paths.
+    """
+    from medrag.config.settings import settings
+
+    name = (provider or settings.llm_provider).strip().lower()
+    api_keys = {
+        "deepseek": settings.deepseek_api_key,
+        "zhipuai": settings.zhipuai_api_key,
+        "qwen": settings.qwen_api_key,
+    }
+    if name == "ollama":
+        return True
+    return bool(api_keys.get(name))

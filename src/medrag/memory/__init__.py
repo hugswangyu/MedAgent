@@ -1,27 +1,12 @@
-"""Memory system — unified facade for STM, LTM, preference, and graph memory.
-
-Usage::
-
-    from medrag.memory import MemorySystem, get_memory_system
-
-    ms = MemorySystem()
-    ms.add_message("user", "你好，我叫张三")
-    ms.remember("患者有高血压病史", importance=0.8)
-
-    context = ms.build_context("你好")
-    # → "【用户偏好】\\n姓名: 张三\\n【长期记忆】\\n- 患者有高血压病史"
-"""
-
+"""Three memory layers: recent dialogue, grounded long-term facts, health profile."""
 from __future__ import annotations
 
 import logging
-import threading
-from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, wait
+from datetime import datetime
+from threading import RLock, BoundedSemaphore
+from uuid import uuid4
 
-import numpy as np
-
-from .classifier import classify_memory_content, get_importance
-from .graph_memory import GraphMemory
 from .long_term import LongTermMemory
 from .preference import PreferenceStore
 from .schema import (
@@ -30,288 +15,169 @@ from .schema import (
     PRIORITY_QA, PRIORITY_CASE_CHUNKS, PRIORITY_QUERY,
 )
 from .short_term import ConversationMessage, ShortTermMemory
-from .types import ConsolidationConfig, ConsolidationResult, MemoryItem, RecallFilter
+from .types import AtomicFact, ConsolidationConfig, ConsolidationResult, MemoryItem, RecallFilter
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# MemorySystem
-# ---------------------------------------------------------------------------
-
-
 class MemorySystem:
-    """Unified memory facade integrating STM + GraphMemory + Preference.
-
-    Mirrors the integration pattern from AGI-saber agent/agent.go process().
-    """
-
-    def __init__(
-        self,
-        max_turns: int = 5,
-        consolidation: Optional[ConsolidationConfig] = None,
-        kg_store=None,
-        persist_path: Optional[str] = None,
-        username: str = "",
-    ):
-        self._persist_path = persist_path
-        self._kg_store = kg_store
+    def __init__(self, max_turns=5, consolidation=None, persist_path=None, username="",
+                 session_id="", embedder=None, async_extraction=True, long_term=None):
+        self._persist_path, self._username = persist_path, username
+        self._session_id, self._embedder = session_id, embedder
+        self._lock = RLock()
+        self._generation = 0
+        self._msg_count = 0
+        self._async_extraction = async_extraction
+        self._executor = None
+        self._pending = set()
+        self._capacity = BoundedSemaphore(16)
         self.short_term = ShortTermMemory(max_turns=max_turns)
-        self.preferences = PreferenceStore(username=username)
-        self.long_term = LongTermMemory(
-            username=username,
-            persist_path=persist_path,
-        )
+        self.long_term = long_term if long_term is not None else LongTermMemory(username, persist_path)
         self._consolidation_cfg = consolidation or ConsolidationConfig()
         self.long_term.set_consolidation_config(self._consolidation_cfg)
-        self.graph = GraphMemory(self.long_term, kg_store=kg_store)
-        self._msg_count = 0
+        self.preferences = PreferenceStore(username=username, long_term=self.long_term)
 
-    # ------------------------------------------------------------------
-    # Message-level API (called per chat turn)
-    # ------------------------------------------------------------------
+    def _store_fact(self, fact):
+        embedding = None
+        if self._embedder:
+            try:
+                embedding = self._embedder(f"{fact.subject} {fact.predicate}: {'否认 ' if fact.negated else ''}{fact.value}")
+            except Exception:
+                logger.warning("Fact embedding unavailable; using text recall")
+        self.long_term.store_fact(fact, embedding=embedding)
 
-    def add_message(self, role: str, content: str) -> None:
-        """Process a conversation message through all memory layers.
+    def add_message(self, role, content):
+        with self._lock:
+            self.short_term.add(role, content)
+            self._msg_count += 1
+            if role != "user":
+                return
+            message_id, recorded_at = uuid4().hex, datetime.utcnow()
+            generation = self._generation
+            # Rules execute before returning, independently of LLM availability.
+            from .extraction import extract_rules
+            for fact in extract_rules(content, message_id, self._session_id, recorded_at):
+                self._store_fact(fact)
+            if not self._async_extraction or not self._capacity.acquire(blocking=False):
+                return
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-extract")
+            future = self._executor.submit(self._enrich, content, message_id, recorded_at, generation)
+            self._pending.add(future)
+            future.add_done_callback(self._extraction_done)
 
-        1. STM: store in sliding window.
-        2. Preference: LLM extraction (async, regex fallback built-in).
-        3. LTM: if content is classifiable, store as long-term memory.
+    def _enrich(self, text, message_id, recorded_at, generation):
+        from .extraction import extract_llm
+        facts = extract_llm(text, message_id, self._session_id, recorded_at)
+        with self._lock:
+            if generation != self._generation:
+                return
+            for fact in facts:
+                self._store_fact(fact)
+            self._maybe_consolidate()
 
-        Mirrors AGI-saber process() stm.Add + extractAndSave + extractMemoryFromReply.
-        """
-        self.short_term.add(role, content)
-        self._msg_count += 1
+    def _extraction_done(self, future):
+        with self._lock:
+            self._pending.discard(future)
+        self._capacity.release()
+        if not future.cancelled() and future.exception():
+            logger.error("Memory enrichment failed: %s", future.exception())
 
-        if role == "user":
-            # ── Preference extraction (async LLM, regex fallback when LLM unavailable) ──
-            threading.Thread(
-                target=self.preferences.llm_extract,
-                args=(content,),
-                daemon=True,
-            ).start()
+    def wait_for_extraction(self, timeout=20):
+        with self._lock:
+            pending = list(self._pending)
+        return not wait(pending, timeout=timeout).not_done
 
-            # ── Store classifiable content as long-term memory ──
-            cat, tags, hint = classify_memory_content(content)
-            imp = get_importance(cat)
-            if cat != "general" and imp > 0:
-                self.remember(content, importance=imp,
-                              category=cat, tags=tags, slot_hint=hint)
+    def close(self):
+        with self._lock:
+            self._generation += 1
+            executor, self._executor = self._executor, None
+        if executor:
+            executor.shutdown(wait=False, cancel_futures=True)
 
-    def add_message_with_embedding(self, role: str, content: str,
-                                    embedding: np.ndarray) -> None:
-        """Like add_message but with an embedding vector for better recall.
+    def add_message_with_embedding(self, role, content, embedding):
+        # Whole-message embeddings must never be assigned to extracted atomic facts.
+        self.add_message(role, content)
 
-        Preferred when an embedding model is available (e.g. from the RAG pipeline).
-        """
-        self.short_term.add(role, content)
-        self._msg_count += 1
+    def store_assistant_reply(self, content, embedding=None):
+        with self._lock:
+            self.short_term.add("assistant", content)
+            self._maybe_consolidate()
 
-        if role == "user":
-            # ── Preference extraction (async LLM, regex fallback when LLM unavailable) ──
-            threading.Thread(
-                target=self.preferences.llm_extract,
-                args=(content,),
-                daemon=True,
-            ).start()
+    def remember(self, content, importance=.5, embedding=None, category="general", tags=None, slot_hint=""):
+        """Explicit/trusted insertion API; never called on raw chat replies."""
+        return self.long_term.store_classified(content, importance, embedding, category, tags, slot_hint)
 
-            cat, tags, hint = classify_memory_content(content)
-            imp = get_importance(cat)
-            if cat != "general" and imp > 0:
-                self.remember(content, importance=imp,
-                              embedding=embedding,
-                              category=cat, tags=tags, slot_hint=hint)
+    def recall(self, query="", query_embedding=None, top_k=5, filter=None):
+        return self.long_term.recall_by_filter(query, query_embedding,
+                                               filter or RecallFilter(top_k=top_k))
 
-    def store_assistant_reply(self, content: str,
-                               embedding: Optional[np.ndarray] = None) -> None:
-        """Process assistant reply: store in STM, extract memory-worthy info.
+    def build_context(self, query, query_embedding=None, include_stm=True, budget=4096):
+        with self._lock:
+            assembler = ContextAssembler(budget=budget)
+            # Each fact is independently budgeted; never drop an entire profile at once.
+            facts = self.preferences.current_facts()
+            for fact in facts:
+                critical = fact.predicate in {"过敏史", "慢性病史", "长期用药"}
+                assembler.add("profile", "【用户健康画像/用户偏好】\n"+fact.render(),
+                              priority=100 if critical else 90, token_budget=768,
+                              required=critical)
+            if not facts:
+                assembler.add("profile", self.preferences.build_context(), priority=90, token_budget=1024)
+            for item in self.recall(query, query_embedding):
+                if item.fact and any(f.fact_id == item.fact.fact_id for f in facts):
+                    continue
+                text = item.fact.render() if item.fact else "来源未经核验的历史资料："+item.content
+                assembler.add("recall_memory", "【长期记忆】\n"+text, priority=60, token_budget=512)
+            if include_stm:
+                for msg in reversed(self.short_term.to_llm_messages()[-6:]):
+                    assembler.add("short_term", "【对话历史】\n"+msg["role"]+": "+msg["content"],
+                                  priority=40, token_budget=512)
+            return assembler.assemble()
 
-        Mirrors AGI-saber process() stm.Add("assistant") + extractMemoryFromReply.
-        """
-        self.short_term.add("assistant", content)
+    def _maybe_consolidate(self):
+        if self.long_term.need_consolidation():
+            self.long_term.consolidate()
 
-        # Classify and store assistant reply content
-        cat, tags, hint = classify_memory_content(content)
-        imp = get_importance(cat) * 0.8  # assistant side slightly discounted
-        if cat != "general" and imp > 0:
-            self.remember(content, importance=imp,
-                          embedding=embedding,
-                          category=cat, tags=tags, slot_hint=hint)
+    def consolidate_now(self):
+        return self.long_term.consolidate()
 
-        # Check consolidation trigger
-        self._maybe_consolidate()
-
-    # ------------------------------------------------------------------
-    # Long-term memory API
-    # ------------------------------------------------------------------
-
-    def remember(self, content: str, importance: float = 0.5,
-                 embedding: Optional[np.ndarray] = None,
-                 category: str = "general",
-                 tags: Optional[List[str]] = None,
-                 slot_hint: str = "") -> bool:
-        """Store a long-term memory.
-
-        Returns True if new, False if deduped.
-        """
-        tags = tags or []
-        added, _ = self.graph.store_classified(
-            content, importance, embedding, category, tags, slot_hint,
-        )
-        return added
-
-    def recall(self, query: str = "",
-               query_embedding: Optional[np.ndarray] = None,
-               top_k: int = 5,
-               filter: Optional[RecallFilter] = None) -> List[MemoryItem]:
-        """Recall relevant long-term memories."""
-        effective_filter = filter or RecallFilter(top_k=top_k, min_score=0.4)
-        return self.graph.recall_by_filter(
-            query, query_embedding, effective_filter,
-        )
-
-    # ------------------------------------------------------------------
-    # Context building for LLM prompts
-    # ------------------------------------------------------------------
-
-    def build_context(self, query: str,
-                      query_embedding: Optional[np.ndarray] = None,
-                      include_stm: bool = True,
-                      budget: int = 4096) -> str:
-        """Build a formatted memory context string using priority-based ContextAssembler.
-
-        Sections (all at PRIORITY_MEMORY level — compete equally under budget):
-          1. User preferences (from PreferenceStore.build_context)
-          2. Long-term memory recall (from recall)
-          3. Short-term memory (recent conversation history)
-
-        Mirrors AGI-saber buildContextPrefix via runtime.ContextAssembler.
-        """
-        assembler = ContextAssembler(budget=budget)
-
-        # 1. Preferences
-        pref_text = self.preferences.build_context()
-        if pref_text:
-            assembler.add("preferences", pref_text, priority=PRIORITY_MEMORY)
-
-        # 2. Long-term recall
-        ltm_results = self.recall(query, query_embedding, top_k=5)
-        if ltm_results:
-            mem_lines = ["【长期记忆】"]
-            for item in ltm_results:
-                mem_lines.append(f"- {item.content}")
-            assembler.add("long_term", "\n".join(mem_lines),
-                          priority=PRIORITY_MEMORY)
-
-        # 3. Short-term history
-        if include_stm and len(self.short_term) > 0:
-            stm_msgs = self.short_term.to_llm_messages()
-            if stm_msgs:
-                stm_lines = ["【对话历史】"]
-                for m in stm_msgs[-6:]:  # last 3 turns
-                    prefix = "用户" if m["role"] == "user" else "助手"
-                    text = m["content"][:200]
-                    stm_lines.append(f"{prefix}: {text}")
-                assembler.add("short_term", "\n".join(stm_lines),
-                              priority=PRIORITY_MEMORY)
-
-        return assembler.assemble()
-
-    # ------------------------------------------------------------------
-    # Consolidation
-    # ------------------------------------------------------------------
-
-    def _maybe_consolidate(self) -> None:
-        """Trigger consolidation if threshold reached.
-
-        Mirrors AGI-saber process() async consolidation goroutine.
-        """
-        if self.graph.need_consolidation():
-            result = self.graph.graph_aware_consolidate()
-            if result.deduped or result.merged or result.expired:
-                logger.info(
-                    "Memory consolidation: %d deduped, %d merged, %d expired",
-                    result.deduped, result.merged, result.expired,
-                )
-
-    def consolidate_now(self) -> ConsolidationResult:
-        """Force an immediate consolidation cycle."""
-        result = self.graph.graph_aware_consolidate()
-        return result
-
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
-
-    def clear(self) -> None:
-        """Clear all memory layers."""
-        username = self.long_term._username
-        self.short_term.clear()
-        self.long_term.clear()
-        self.long_term.set_consolidation_config(self._consolidation_cfg)
-        self.graph = GraphMemory(self.long_term, kg_store=self._kg_store)
-        self.preferences = PreferenceStore(username=username)
-        self._msg_count = 0
+    def clear(self):
+        with self._lock:
+            self._generation += 1
+            self.short_term.clear()
+            self.long_term.clear()
+            self.preferences._legacy.clear()
+            if self._username:
+                from medrag.infrastructure.storage.postgres_client import pref_clear
+                pref_clear(self._username)
+            self._msg_count = 0
 
     @property
-    def stm_messages(self) -> List[ConversationMessage]:
+    def stm_messages(self):
         return self.short_term.messages()
 
     @property
-    def stats(self) -> Dict:
-        return {
-            "stm_count": len(self.short_term),
-            "ltm_count": self.long_term.count(),
-            "preferences": len(self.preferences.data),
-            "msg_count": self._msg_count,
-        }
+    def stats(self):
+        return {"stm_count": len(self.short_term), "ltm_count": self.long_term.count(),
+                "preferences": len(self.preferences.data), "msg_count": self._msg_count}
 
 
-# ---------------------------------------------------------------------------
-# Singleton (per-service-instance, reused across requests)
-# ---------------------------------------------------------------------------
-
-_system: Optional[MemorySystem] = None
+_system = None
 
 
-def get_memory_system() -> MemorySystem:
-    """Return the default singleton MemorySystem.
-
-    Reused across requests within the same process.
-    For per-session memory, create a MemorySystem per session_id.
-    """
+def get_memory_system():
     global _system
     if _system is None:
         _system = MemorySystem()
     return _system
 
 
-def create_memory_system(max_turns: int = 5,
-                          kg_store=None,
-                          persist_path: Optional[str] = None,
-                          username: str = "") -> MemorySystem:
-    """Create a fresh MemorySystem (useful for per-session isolation)."""
-    return MemorySystem(
-        max_turns=max_turns,
-        kg_store=kg_store,
-        persist_path=persist_path,
-        username=username,
-    )
+def create_memory_system(max_turns=5, persist_path=None, username="", **kwargs):
+    return MemorySystem(max_turns=max_turns, persist_path=persist_path, username=username, **kwargs)
 
 
-__all__ = [
-    "MemorySystem",
-    "get_memory_system",
-    "create_memory_system",
-    "ShortTermMemory",
-    "LongTermMemory",
-    "PreferenceStore",
-    "GraphMemory",
-    "ContextAssembler",
-    "Slot",
-    "estimate_tokens",
-    "MemoryItem",
-    "RecallFilter",
-    "ConsolidationConfig",
-    "ConsolidationResult",
-]
+__all__ = ["MemorySystem", "get_memory_system", "create_memory_system", "ShortTermMemory",
+           "LongTermMemory", "PreferenceStore", "ContextAssembler", "Slot", "estimate_tokens",
+           "AtomicFact", "MemoryItem", "RecallFilter", "ConsolidationConfig", "ConsolidationResult"]

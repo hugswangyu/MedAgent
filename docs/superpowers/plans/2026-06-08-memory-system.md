@@ -1,3 +1,5 @@
+> 历史设计记录：2026-10-21 已由 [当前记忆设计](../../memory-system.md) 替代。下文的图记忆方案不再用于当前实现。
+
 # Phase 1: Memory System Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

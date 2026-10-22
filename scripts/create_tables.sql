@@ -8,7 +8,10 @@ CREATE TABLE IF NOT EXISTS long_term_memory (
     tags TEXT[] NOT NULL DEFAULT '{}',
     slot_hint TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    last_accessed TIMESTAMP NOT NULL DEFAULT NOW()
+    last_accessed TIMESTAMP NOT NULL DEFAULT NOW(),
+    base_importance REAL,
+    decay_anchor TIMESTAMP,
+    fact JSONB
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (

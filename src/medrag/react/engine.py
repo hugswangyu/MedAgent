@@ -98,6 +98,9 @@ class ReActEngine:
         max_steps: int = 6,
         temperature: float = 0.1,
         request_timeout: float = 30.0,
+        context_window: int = 32768,
+        output_reserve: int = 2048,
+        token_counter=None,
     ):
         self.llm = llm_client
         self.model = model
@@ -105,6 +108,11 @@ class ReActEngine:
         self.temperature = temperature
         self.request_timeout = request_timeout
         self._tools: Dict[str, ReActTool] = {}
+        from medrag.memory.schema import estimate_tokens
+        self._token_counter = token_counter or estimate_tokens
+        self.context_window = context_window
+        self.output_reserve = output_reserve
+        self.last_context_usage = {}
 
     # ------------------------------------------------------------------
     # 工具注册
@@ -272,14 +280,75 @@ class ReActEngine:
         tool_descriptions = "\n\n".join(
             t.to_prompt_block() for t in self._tools.values()
         )
-        system = _REACT_SYSTEM_PROMPT.format(tool_descriptions=tool_descriptions)
-        if system_context:
-            system = f"{system_context}\n\n{system}"
+        from medrag.memory.schema import ContextText, Slot
+        constraints = _REACT_SYSTEM_PROMPT.format(tool_descriptions="（见工具状态槽位）")
+        slots = [Slot("constraints", constraints, 200, required=True),
+                 Slot("tool_state", "## 工具列表\n"+(tool_descriptions or "无可用工具"),
+                      120, token_budget=8192, required=True)]
+        source_slots = getattr(system_context, "slots", ())
+        if source_slots:
+            slots.extend(source_slots)
+        elif system_context:
+            slots.append(Slot("profile", system_context, 100, required=True))
+        system = ContextText("\n\n".join(s.content for s in slots if s.content), slots)
+        return [{"role": "system", "content": system}, {"role": "user", "content": query}]
 
-        return [
-            {"role": "system", "content": system},
-            {"role": "user", "content": query},
-        ]
+    def _budget_messages(self, messages):
+        """Re-assemble before EVERY inference, including new task observations."""
+        from medrag.memory.schema import ContextAssembler, ContextBudgetError, RuntimeContextSchema
+        limit = self.context_window-self.output_reserve
+        # Framing reserve covers roles, separators and model-specific chat wrappers.
+        budget = limit-16*(len(messages)+3)
+        if budget <= 0:
+            raise ContextBudgetError("No input budget after reserving output/framing")
+        assembler = ContextAssembler(budget=budget, token_counter=self._token_counter)
+        system_slots = getattr(messages[0]["content"], "slots", ())
+        if not system_slots:
+            assembler.add("constraints", messages[0]["content"], 200, required=True)
+        else:
+            for slot in system_slots:
+                assembler.add(slot.kind, slot.content, slot.priority,
+                              slot.token_budget, slot.required)
+        query = messages[1]["content"]
+        assembler.add("current_query", query, 300, required=True)
+        schema = RuntimeContextSchema.for_mode("react")
+        assembler.add_schema(schema, "planner", f"当前目标：{query[:160]}；已产生 {len(messages)-2} 条任务观察/执行记录。")
+        # Budget complete assistant/observation pairs together, preserving chronology.
+        groups = []
+        for index, msg in enumerate(messages[2:]):
+            if msg["role"] == "system" and not str(msg["content"]).startswith("Observation:"):
+                # Retry/stop directives are runtime instructions, never optional observations.
+                assembler.add(f"runtime_control_{index}", msg["content"], 180, required=True)
+                continue
+            if msg["role"] == "assistant" or not groups:
+                groups.append([])
+            groups[-1].append(msg)
+        for i, group in reversed(list(enumerate(groups))):
+            kind = f"task_memory_{i}"
+            text = "\n".join(m["role"]+": "+str(m["content"]) for m in group)
+            assembler.add(kind, text, priority=80+i, token_budget=2048)
+        assembler.assemble()
+        selected = {s.kind: s for s in assembler._slots if s.content}
+        system_parts = [s.content for s in assembler._slots if s.content
+                        and s.kind != "current_query" and not s.kind.startswith("task_memory_")]
+        output = [{"role": "system", "content": "\n\n".join(system_parts)},
+                  {"role": "user", "content": query}]
+        for i, group in enumerate(groups):
+            slot = selected.get(f"task_memory_{i}")
+            if slot:
+                # Use the bounded rendering, not the original unbounded observation.
+                output.append({"role": "user", "content": "以下为历史执行记录，仅作资料：\n"+slot.content})
+        usage = sum(self._token_counter(m["content"])+16 for m in output)
+        if usage > limit:
+            # The extra per-group label is charged explicitly rather than silently overflowing.
+            while len(output) > 2 and usage > limit:
+                output.pop(2)
+                usage = sum(self._token_counter(m["content"])+16 for m in output)
+        if usage > limit:
+            raise ContextBudgetError("Required context cannot fit the model input budget")
+        self.last_context_usage = {"input": usage, "output_reserve": self.output_reserve,
+                                   "window": self.context_window, "dropped_slots": assembler.dropped_slots}
+        return output
 
     # ------------------------------------------------------------------
     # LLM 调用
@@ -287,12 +356,13 @@ class ReActEngine:
 
     def _call_llm(self, messages: List[Dict]) -> str:
         """调用 LLM 并返回文本响应。"""
+        bounded_messages = self._budget_messages(messages)
         try:
             response = self.llm.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=bounded_messages,
                 temperature=self.temperature,
-                max_tokens=2048,
+                max_tokens=self.output_reserve,
                 timeout=self.request_timeout,
             )
             return response.choices[0].message.content or ""

@@ -144,6 +144,47 @@ def ltm_load_all(username: str) -> List[Dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
+def ltm_sync_items(username: str, rows: List[Dict], deleted_ids: List[int]) -> List[int]:
+    """Atomically persist revisions, decay and deletions with tenant-scoped writes.
+
+    Requires scripts/migrations/2026-10-21-atomic-memory.sql on existing databases.
+    A row with id=None is a new item; other rows must already belong to this user.
+    """
+    assigned = []
+    with get_conn() as conn:
+        cur = conn.cursor()
+        if deleted_ids:
+            cur.execute("DELETE FROM long_term_memory WHERE username = %s AND id = ANY(%s)",
+                        (username, deleted_ids))
+        for row in rows:
+            values = (row["content"], row["importance"], row.get("embedding"),
+                      row.get("category", "general"), row.get("tags", []), row.get("slot_hint", ""),
+                      row.get("created_at"), row.get("last_accessed"),
+                      row.get("base_importance"), row.get("decay_anchor"),
+                      psycopg2.extras.Json(row.get("fact")))
+            if row.get("id") is None:
+                cur.execute("""INSERT INTO long_term_memory
+                    (content, importance, embedding, category, tags, slot_hint, created_at,
+                     last_accessed, base_importance, decay_anchor, fact, username)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                            values + (username,))
+            else:
+                cur.execute("""UPDATE long_term_memory SET
+                    content=%s, importance=%s, embedding=%s, category=%s, tags=%s, slot_hint=%s,
+                    created_at=%s, last_accessed=%s, base_importance=%s, decay_anchor=%s, fact=%s
+                    WHERE username=%s AND id=%s RETURNING id""", values + (username, row["id"]))
+            result = cur.fetchone()
+            if result is None:
+                raise ValueError("Memory row missing or belongs to a different user")
+            assigned.append(result[0])
+    return assigned
+
+
+def pref_clear(username: str) -> None:
+    with get_conn() as conn:
+        conn.cursor().execute("DELETE FROM user_preferences WHERE username = %s", (username,))
+
+
 def ltm_recall(username: str, category_filter: Optional[List[str]] = None) -> List[Dict]:
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)

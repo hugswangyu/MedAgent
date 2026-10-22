@@ -22,7 +22,7 @@
 │  ┌──────────┐  ┌─────────────────┐  ┌────────────┐  ┌────────┐ │
 │  │ Tool 匹配 │  │ QueryRouter     │  │ 记忆系统    │  │Safety  │ │
 │  │ (快速路径)│  │ (仅元数据/不选   │  │ STM/LTM/   │  │Guard   │ │
-│  │          │  │  执行模式)       │  │ 偏好/Graph │  │(分级)  │ │
+│  │          │  │  执行模式)       │  │ 健康画像   │  │(分级)  │ │
 │  └────┬─────┘  └────────┬────────┘  └────────────┘  └────────┘ │
 │       │                 │                                        │
 │       └──────┬──────────┘                                        │
@@ -75,7 +75,7 @@
 | **RRF 融合** | Dense + Sparse 倒数排名融合，跨源分数叠加 |
 | **Cross-Encoder 精排** | RRF 结果二次排序，提升 top-k 准确率 |
 | **Schema-Driven 上下文** | 优先级插槽 + 全局 Token 预算裁剪 |
-| **分层记忆系统** | STM + LTM + Preference + GraphMemory，含自动 consolidation |
+| **分层记忆系统** | 短期窗口 + 原子事实 LTM + 版本化健康画像；同步规则/异步提取、幂等衰减及槽位预算 |
 | **PostgreSQL 持久化** | 会话 / LTM 记忆 / 用户偏好统一存储，多租户隔离 |
 | **LLM 偏好提取** | DeepSeek 异步提取用户偏好，规则提取作为同步回退 |
 | **内置工具包** | 剂量计算、科室导诊、检查指标正常值查询，作为 ReAct 工具注册 |
@@ -155,6 +155,8 @@ createdb ragqa_memory
 
 # 建表
 psql -d ragqa_memory -f scripts/create_tables.sql
+# 已有数据库升级原子事实字段（可重复执行）
+psql -d ragqa_memory -f scripts/migrations/2026-10-21-atomic-memory.sql
 ```
 
 ### 启动
@@ -188,7 +190,7 @@ src/medrag/
 ├── memory/           # 分层记忆系统
 │   ├── short_term.py       # STM 滑动窗口
 │   ├── long_term.py        # LTM 语义召回 + 持久化
-│   ├── graph_memory.py     # 图感知记忆
+│   ├── extraction.py       # 同步规则 + 异步 LLM 原子事实提取
 │   ├── preference.py       # 用户偏好提取
 │   └── schema.py           # ContextAssembler
 ├── react/            # ReAct 多步推理引擎
@@ -277,3 +279,5 @@ src/medrag/
 ## 许可证
 
 [MIT License](LICENSE)
+
+记忆系统的数据结构、兼容策略与验证方法见 [记忆系统设计](docs/memory-system.md)。
