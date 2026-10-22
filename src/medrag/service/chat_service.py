@@ -312,6 +312,7 @@ class MedicalChatService:
             router=_route,
             react_engine_builder=_build_engine,
             safety_checker=_safety_check,
+            retrieval_quality_getter=lambda: retrieval_trace.get("retrieval_quality", "not_requested"),
         )
 
         result = orchestrator.run(

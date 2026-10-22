@@ -65,6 +65,8 @@ class RetrieveKnowledgeTool:
             格式化文本，包含知识图谱结果和相似问答结果。
             空结果时返回 "未找到相关信息。"。
         """
+        if self._trace_context is not None:
+            self._trace_context["retrieval_quality"] = "error"
         try:
             retrieval = self._retriever.retrieve(
                 query,
@@ -90,6 +92,12 @@ class RetrieveKnowledgeTool:
         if self._trace_context is not None:
             self._trace_context["raw_result"] = retrieval
             self._trace_context["reranked_qa"] = qa_results
+            has_data = bool(kg_results or qa_results or case_results)
+            errors = retrieval.get("retrieval_errors", [])
+            self._trace_context["retrieval_quality"] = (
+                ("low" if errors else "retrieved") if has_data
+                else ("error" if errors else "none")
+            )
 
         parts: List[str] = []
 
@@ -136,5 +144,7 @@ class RetrieveKnowledgeTool:
                 parts.append("")
 
         if not parts:
+            if retrieval.get("retrieval_errors"):
+                return "[status=error] 检索服务暂时不可用，未能获取参考资料。请告知用户暂时无法查询。"
             return "[status=not_found] 检索完成，但知识库中无匹配文档。可尝试换用不同关键词，或直接告知用户信息不足。"
         return "\n".join(parts).strip()

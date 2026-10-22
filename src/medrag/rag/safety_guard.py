@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 # 非医学问题类型——不需要附加"请咨询医生"声明
-_NON_MEDICAL_TYPES = frozenset({"department", "diet"})
+_NON_MEDICAL_TYPES = frozenset({"department", "diet", "smalltalk"})
 
 # ---------------------------------------------------------------------------
 # 红色信号（立即急诊 — 回答开头插入警告）
@@ -64,8 +64,9 @@ _YELLOW_WARNING = (
 
 RETRIEVAL_DISCLAIMERS: Dict[str, str] = {
     "high": "以上信息基于已检索到的医学资料，请咨询医生确认后使用。",
-    "low": "检索到的资料存在差异或不完整，请以医生意见为准。",
-    "none": "该问题在知识库中未检索到相关信息，请咨询专业医生。",
+    "low": "目前的参考资料不完整，具体判断还需要结合实际情况。",
+    "none": "目前未检索到能直接回答这个问题的资料，暂时无法给出可靠判断。",
+    "error": "目前暂时无法查询参考资料，涉及具体诊断或用药时，建议向医生核实。",
 }
 
 _DEFAULT_DISCLAIMER = "以上内容仅用于健康科普和就医参考，不能替代医生面诊。"
@@ -130,7 +131,7 @@ class SafetyGuard:
     @staticmethod
     def get_retrieval_disclaimer(quality: str) -> str:
         """根据检索质量返回对应的免责声明。"""
-        return RETRIEVAL_DISCLAIMERS.get(quality, RETRIEVAL_DISCLAIMERS["high"])
+        return RETRIEVAL_DISCLAIMERS.get(quality, _DEFAULT_DISCLAIMER)
 
     @staticmethod
     def append_safety_notice(
@@ -143,7 +144,8 @@ class SafetyGuard:
 
         - 红色信号 → 在开头添加紧急就医警告。
         - 黄色信号 → 在末尾添加尽快就医提醒。
-        - 医疗类问题 → 末尾追加检索质量免责声明（非医学问题跳过）。
+        - 医疗类问题 → 仅在检索为空、失败或资料不完整时补充说明。
+        - 闲聊、未发起检索及正常检索回答 → 不追加固定免责声明。
         """
         parts: List[str] = []
 
@@ -158,11 +160,16 @@ class SafetyGuard:
         if risk_level == "yellow":
             parts.append(risk_info.get("safety_message", _YELLOW_WARNING))
 
-        # 免责声明：仅医疗类问题追加
-        if _needs_disclaimer(query_type):
+        # 仅对确实存在的资料缺口补充说明，不给普通回答机械追加声明。
+        if _needs_disclaimer(query_type) and retrieval_quality in {"none", "low", "error"}:
             disclaimer = RETRIEVAL_DISCLAIMERS.get(
                 retrieval_quality, _DEFAULT_DISCLAIMER
             )
-            parts.append(disclaimer)
+            already_explained = any(phrase in answer for phrase in (
+                "未找到", "未检索到", "资料不足", "信息不足", "资料不完整",
+                "资料不够完整", "无法查询", "检索异常", "检索失败", "无法检索",
+            ))
+            if not already_explained and disclaimer not in answer:
+                parts.append(disclaimer)
 
         return "\n\n".join(parts)

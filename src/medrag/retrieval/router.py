@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Dict, Optional
 
 from medrag.config.settings import settings
@@ -103,6 +104,7 @@ _CASE_CONTEXT_KEYWORDS = [
 ]
 
 QUERY_TYPES = [
+    "smalltalk",
     "disease_fact",
     "medication",
     "diet",
@@ -120,7 +122,8 @@ _ROUTER_SYSTEM = """你是一个医疗问答分类器。根据用户问题判断
 - kg: Neo4j 医学知识图谱（疾病、症状、药品、饮食、科室等结构化知识）
 - qa: cMedQA2 医疗问答向量库（通用医学问答）
 
-可选 query_type（5类，严格按优先级从高到低判断，前面能匹配就不要用后面的）：
+可选 query_type（先区分是否为医疗问题，再判断医疗问题类型）：
+- smalltalk: 纯问候、感谢、告别、助手介绍及其他不涉及医疗建议的普通交流。不启用 kg 或 qa。若问候后还有症状、用药或其他医疗诉求，必须按医疗问题分类。
 - department: 核心意图是"挂什么科/看什么科室"。例：哮喘挂什么科？胃痛该看哪个科？
 - medication: 核心意图涉及具体药物——包括：药名查询（谁生产/什么药）、用法用量、是否需要用药（需要吃抗生素吗）、药物安全（能不能继续吃、和其他药冲突吗）。例：阿莫西林是谁生产的？嗓子疼需要吃抗生素吗？二甲双胍肾功能异常还能继续吃吗？
 - diet: 核心意图是食物/饮食——包括：不能吃什么、能吃什么（食物）、饮食建议。例：痛风不能吃什么？糖尿病人能吃水果吗？胆固醇高饮食怎么调整？
@@ -180,6 +183,10 @@ class QueryRouter:
         返回字典，键为：use_kg、use_qa、reason、query_type、answer_style、needs_case_context。
         不再返回 execution_mode——执行模式统一由上层决定。
         """
+        if _is_smalltalk(query):
+            route = self._rule_route(query)
+            self._enrich_route(route, query)
+            return route
         if use_llm and settings.deepseek_api_key:
             result = self._llm_route(query)
             if result is not None:
@@ -249,7 +256,9 @@ class QueryRouter:
             return None
 
         # 确保至少启用一个数据源
-        if not (canonical["use_kg"] or canonical["use_qa"]):
+        if canonical["query_type"] == "smalltalk":
+            canonical.update(use_kg=False, use_qa=False, needs_case_context=False)
+        elif not (canonical["use_kg"] or canonical["use_qa"]):
             canonical["use_qa"] = True
 
         return canonical
@@ -260,6 +269,9 @@ class QueryRouter:
 
     @staticmethod
     def _rule_route(query: str) -> Dict:
+        if _is_smalltalk(query):
+            return {"use_kg": False, "use_qa": False,
+                    "query_type": "smalltalk", "reason": "普通交流，无需医学检索"}
         for keywords, qtype, kg, toyhom in _ROUTES:
             if any(kw in query for kw in keywords):
                 reason = _build_reason(kg, toyhom, keywords, query)
@@ -281,6 +293,10 @@ class QueryRouter:
     def _enrich_route(route: Dict, query: str) -> None:
         """补齐下游 prompt / 病例检索需要的路由字段。"""
         qtype = route.get("query_type") or _FALLBACK_QUERY_TYPE
+        if qtype == "smalltalk":
+            route.update(use_kg=False, use_qa=False, needs_case_context=False,
+                         answer_style="conversational")
+            return
         if qtype not in QUERY_TYPES:
             qtype = _FALLBACK_QUERY_TYPE
             route["query_type"] = qtype
@@ -295,6 +311,17 @@ class QueryRouter:
 # ---------------------------------------------------------------------------
 # 辅助函数
 # ---------------------------------------------------------------------------
+
+
+def _is_smalltalk(query: str) -> bool:
+    # 仅匹配完整短句，避免将“你好，我胸痛”误判为闲聊。
+    text = re.sub(r"[\s，。！？、,.!?~～…：:；;]+", "", query).casefold()
+    return text in {
+        "hello", "hi", "hey", "你好", "您好", "你好呀", "你好啊", "哈喽", "嗨",
+        "早上好", "下午好", "晚上好", "在吗", "谢谢", "谢谢你", "多谢", "感谢",
+        "好的", "好", "嗯", "明白了", "知道了", "再见", "拜拜",
+        "你是谁", "你能做什么", "你能帮我做什么", "介绍一下你自己",
+    }
 
 
 def _build_reason(kg: bool, toyhom: bool, keywords: list[str], query: str) -> str:

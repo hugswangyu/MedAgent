@@ -158,16 +158,17 @@ class HybridRetriever:
             }
 
         # --- 1. KG 检索（独立，不参与 RRF/重排）---
-        kg_results = self._safe_kg_search(retrieval_query) if use_kg else []
+        errors: List[str] = []
+        kg_results = self._safe_kg_search(retrieval_query, errors) if use_kg else []
 
         # --- 2. QA 双路检索（Milvus + ES → RRF）---
         qa_results, qa_details = self._retrieve_qa(
-            retrieval_query, top_k, department,
+            retrieval_query, top_k, department, errors,
         ) if use_qa else ([], {"milvus": [], "es": []})
 
         # --- 3. 用户病例检索（独立）---
         case_results = (
-            self._safe_case_search(retrieval_query, username, top_k)
+            self._safe_case_search(retrieval_query, username, top_k, errors)
             if use_case else []
         )
 
@@ -185,6 +186,7 @@ class HybridRetriever:
             "qa_source_details": qa_details,
             "case_results": case_results,
             "fusion_mode": fusion_mode,
+            "retrieval_errors": errors,
         }
 
     # ------------------------------------------------------------------
@@ -192,7 +194,7 @@ class HybridRetriever:
     # ------------------------------------------------------------------
 
     def _retrieve_qa(
-        self, query: str, top_k: int, department: str | None,
+        self, query: str, top_k: int, department: str | None, errors: Optional[List[str]] = None,
     ) -> tuple[List[Dict], Dict[str, List[Dict]]]:
         """cMedQA2 双路检索：Milvus（dense）+ ES（sparse）→ RRF。"""
         milvus_results: List[Dict] = []
@@ -200,8 +202,8 @@ class HybridRetriever:
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = {
-                executor.submit(self._safe_qa_search, query, top_k, department): "milvus",
-                executor.submit(self._safe_es_search, query, top_k, department): "es",
+                executor.submit(self._safe_qa_search, query, top_k, department, errors): "milvus",
+                executor.submit(self._safe_es_search, query, top_k, department, errors): "es",
             }
             for future in as_completed(futures):
                 source = futures[future]
@@ -209,6 +211,8 @@ class HybridRetriever:
                     result = future.result()
                 except Exception:
                     logger.warning("%s retrieval failed", source, exc_info=True)
+                    if errors is not None:
+                        errors.append(source)
                     result = []
                 if source == "milvus":
                     milvus_results = result
@@ -229,32 +233,40 @@ class HybridRetriever:
     # 内部辅助方法（每个源独立 try/except）
     # ------------------------------------------------------------------
 
-    def _safe_kg_search(self, query: str) -> List[Dict]:
+    def _safe_kg_search(self, query: str, errors: Optional[List[str]] = None) -> List[Dict]:
         try:
             return self.kg.search(query)
         except Exception:
             logger.warning("KG retrieval failed", exc_info=True)
+            if errors is not None:
+                errors.append("neo4j")
             return []
 
-    def _safe_qa_search(self, query: str, top_k: int, department: str | None = None) -> List[Dict]:
+    def _safe_qa_search(self, query: str, top_k: int, department: str | None = None, errors: Optional[List[str]] = None) -> List[Dict]:
         try:
             return self.qa.search(query, top_k=top_k, department=department)
         except Exception:
             logger.warning("Milvus retrieval failed", exc_info=True)
+            if errors is not None:
+                errors.append("milvus")
             return []
 
-    def _safe_es_search(self, query: str, top_k: int, department: str | None = None) -> List[Dict]:
+    def _safe_es_search(self, query: str, top_k: int, department: str | None = None, errors: Optional[List[str]] = None) -> List[Dict]:
         if self.es is None:
             return []
         try:
             return self.es.search(query, top_k=top_k, department=department)
         except Exception:
             logger.warning("ES retrieval failed", exc_info=True)
+            if errors is not None:
+                errors.append("es")
             return []
 
-    def _safe_case_search(self, query: str, username: str | None, top_k: int) -> List[Dict]:
+    def _safe_case_search(self, query: str, username: str | None, top_k: int, errors: Optional[List[str]] = None) -> List[Dict]:
         try:
             return self.case_retriever.search(query, username=username, top_k=top_k)
         except Exception:
             logger.warning("User case retrieval failed", exc_info=True)
+            if errors is not None:
+                errors.append("case")
             return []

@@ -58,6 +58,7 @@ class HarnessOrchestrator:
     tool_executor: Optional[Callable] = None  # deprecated
 
     safety_checker: Optional[Callable] = None
+    retrieval_quality_getter: Optional[Callable] = None
     on_event: Optional[Callable[[str, dict], None]] = None
 
     config: HarnessConfig = field(default_factory=HarnessConfig)
@@ -163,9 +164,9 @@ class HarnessOrchestrator:
                 return ""
             try:
                 if self.safety_checker:
-                    retrieval_quality = (
-                        "high" if result.get("react_trace", {}).get("steps") else "none"
-                    )
+                    retrieval_quality = (self.retrieval_quality_getter()
+                                         if self.retrieval_quality_getter else "not_requested")
+                    result["retrieval_quality"] = retrieval_quality
                     result["answer"] = self.safety_checker(
                         query=query,
                         answer=result["answer"],
